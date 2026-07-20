@@ -1,0 +1,20 @@
+[project]
+name = "recover-habloss"
+version = "0.1.0"
+description = "RECOVER area-estimator and prediction-powered inference experiments"
+requires-python = ">=3.11"
+dependencies = [
+    "earthengine-api>=1.5",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pyarrow>=17.0",
+    "pyshp>=2.3",
+    "scikit-learn>=1.5",
+    "scipy>=1.14",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

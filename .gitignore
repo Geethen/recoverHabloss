@@ -206,6 +206,10 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Generated GEE samples and estimator results
+data/ppi_gee/
+data/analysis_results/
+
 # PyPI configuration file
 .pypirc
 

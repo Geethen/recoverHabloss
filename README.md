@@ -51,6 +51,224 @@ abandonment**, or (3) classifies *what is lost* under impervious-surface expansi
 
 ---
 
+## Reproducing the analyses
+
+Install the locked Python environment from a fresh checkout:
+
+```powershell
+uv sync --frozen
+```
+
+The default commands assume that the original project folders are mounted at
+`P:/155020_recover/WP1/R` and `P:/155069_habloss/R`. Every script accepts
+command-line path overrides; run it with `--help` to see them.
+
+The transition-composition analysis uses the original sampler CSVs, cleaned
+sample membership files, GEE stratum-area exports, and the combined HABLOSS
+label file. It does not require a new Earth Engine export:
+
+```powershell
+uv run python R/src/analyse_transition_composition.py --area-workers 32
+```
+
+It writes:
+
+- `data/analysis_results/transition_composition.csv`;
+- `data/analysis_results/transition_composition_by_stratum.csv`;
+- `data/analysis_results/recover_cleaning_diagnostics.csv`.
+
+After the GEE prediction extraction described below, reproduce the PPI
+variance decomposition with:
+
+```powershell
+uv run python R/src/analyse_ppi_variance.py
+```
+
+It writes `ppi_variance_summary.csv` and `ppi_variance_by_stratum.csv` under
+`data/analysis_results/`. Generated results are ignored by Git and can always
+be rebuilt. Formula tests are run with:
+
+```powershell
+uv run python -m pytest tests/test_stratified_ppi.py tests/test_design_analysis.py -q
+```
+
+## 10k and 100k GEE prediction experiment
+
+The experiment uses RECOVER's 40 biome x map-class design strata and the
+Zander HABLOSS crop, grey, and building trend assets. It extracts predictions
+at the interpreted RECOVER points and draws one area-proportional 100,000-point
+predicted-only sample. The 10,000-point sample is a deterministic nested subset.
+Each stratum receives at least 50 predicted-only observations; the remainder is
+allocated in proportion to the mapped stratum area.
+
+```powershell
+uv run python R/src/extract_ppi_gee.py
+uv run python R/src/compare_ppi_subsets.py
+uv run python R/src/bootstrap_ppi_subsets.py --n-bootstrap 2000
+```
+
+Generated data and `comparison.csv` are written to `data/ppi_gee/`, which is
+ignored by Git. To rebuild only the nested samples from an existing maximum
+sample:
+
+```powershell
+uv run python R/src/extract_ppi_gee.py --reuse-max
+```
+
+The comparison reports:
+
+- the Olofsson stratified reference-only baseline;
+- fixed-lambda PPI/PTD;
+- tuned PPI++;
+- predicted-only values as diagnostics;
+- both the hard `built_loss` prediction and a continuous built-trend score.
+
+Run the formula tests with:
+
+```powershell
+uv run python -m pytest
+```
+
+### Initial run (2026-07-17)
+
+The first extraction returned 99,993 of 100,000 requested predicted points;
+the nested sample contains exactly 10,000 points. The last 32 land-dense grid
+cells used a 300 m equal-area fallback after 510 cells completed at 100 m.
+
+| Method | Predicted n | Proxy | Lambda | Area km2 | 95% CI width km2 |
+|---|---:|---|---:|---:|---:|
+| Olofsson stratified | 0 | none | 0.000 | 2,848 | 1,763 |
+| PPI/PTD fixed | 10,000 | hard | 1.000 | 3,313 | 1,921 |
+| PPI++ tuned | 10,000 | hard | 0.170 | 2,927 | 1,766 |
+| PPI++ tuned | 10,000 | continuous score | 0.296 | 3,063 | 1,726 |
+| PPI++ tuned | 99,993 | continuous score | 0.310 | 3,069 | 1,724 |
+
+The current hard Zander prediction disagrees with the historical RECOVER map
+stratum at 2.3% of the labelled points. Results are therefore an initial method
+comparison; final inference should use the historical stratum raster if it can
+be recovered, or explicitly treat the current raster as a new sampling frame.
+
+### Stratified bootstrap check (2026-07-18)
+
+The bootstrap independently resamples labelled truth/prediction pairs and
+predicted-only observations with replacement within each design stratum. It
+keeps mapped stratum areas fixed and re-estimates the PPI++ lambda in every
+replicate. With 2,000 replicates:
+
+| Predicted n | Proxy | Area km2 | Analytic 95% CI km2 | Bootstrap 95% CI km2 |
+|---:|---|---:|---:|---:|
+| 10,000 | hard | 2,927 | 2,044--3,810 | 2,036--3,883 |
+| 10,000 | continuous score | 3,063 | 2,200--3,926 | 2,141--4,002 |
+| 99,993 | hard | 2,927 | 2,044--3,810 | 2,104--3,874 |
+| 99,993 | continuous score | 3,069 | 2,207--3,931 | 2,139--4,079 |
+
+For the preferred 99,993-point continuous-score result, the bootstrap gives
+approximately 512 km2/yr with a six-year-normalised interval of 357--680
+km2/yr. The bootstrap is somewhat wider than the analytic interval because it
+also captures finite-sample instability in the tuned lambda. Increasing the
+predicted-only sample from 10,000 to about 100,000 still has no material effect;
+labelled-sample uncertainty dominates.
+
+## PPI variance decomposition
+
+For labelled observation `i` in stratum `h`, define the tuned PPI residual as
+`e_i = y_i - lambda * yhat_i`. The labelled contribution from that stratum is
+
+```text
+V_h = W_h^2 * variance(e_h) / n_h
+```
+
+where `W_h` is the stratum's share of total mapped area and `n_h` is its number
+of usable labels. `analyse_ppi_variance.py` calculates this term and the finite
+predicted-only variance for all 40 strata rather than relying on copied
+percentages.
+
+For the 99,993-point continuous-score run, it reproduces 1,740 usable labels,
+`lambda = 0.309830`, and a 2.84% predicted-only share of total analytic
+variance. The largest labelled contributions are:
+
+| Stratum | Labels | Confirmed transitions | Share of labelled variance |
+|---|---:|---:|---:|
+| Tropical Forest x built loss | 40 | 6 | 61.6% |
+| Temperate Forest x built loss | 40 | 15 | 17.3% |
+| Temperate Forest x built-loss buffer | 45 | 7 | 16.3% |
+
+Together these three strata account for 95.3% of labelled variance. This is a
+share of uncertainty, not a share of reversion area.
+
+## Vector-valued (joint 3-class) estimation
+
+The estimators above are scalar: each returns one proportion and one standard
+error. `estimators.py` also provides vector-valued generalisations that estimate
+a whole composition over the coarse classes Nature, Cropland, and Artificial
+**jointly**, returning the composition vector `p` and its full covariance matrix
+`Sigma`:
+
+- `stratified_multinomial(Y, strat, Nh)` -- design-based joint estimator. `Y` is
+  an `n x K` one-hot truth matrix. Each class marginal reproduces
+  `stratified_prop`; the off-diagonal terms of `Sigma` carry the within-stratum
+  negative covariance between shares that per-class estimation discards.
+- `stratified_ppi_multinomial(...)` -- the PPI/difference version, using
+  per-class predicted scores (`yhat_nature`, `yhat_cropland`, `yhat_artificial`)
+  from the predicted-only sample. `optimal_lam_multinomial_diag` tunes a
+  per-class lambda.
+- `contrast_ci(p, Sigma, c)` and `composition_ratio_ci(p, Sigma, num, den)` read
+  differences (`c^T p`) and shares off the joint covariance. Using the true
+  covariance is what makes the interval correct; whether it is narrower or wider
+  than the naive independent version depends on the contrast.
+
+Reproduce the real-data RECOVER comparison (scalar-per-class vs joint
+design-based vs joint PPI) with:
+
+```powershell
+uv run python R/src/compare_vector_estimators.py
+```
+
+It writes `data/analysis_results/vector_composition_comparison.csv`. On the real
+RECOVER exits-from-Artificial frame (2,074 plots, 148 observed exits) the joint
+design-based estimator reproduces the known scalar result -- Cropland share of
+exits 22.7%, 95% CI 13.4--31.9% -- and shows that the two destination shares are
+**negatively** correlated. Because a share and a difference of two negatively
+correlated parts both put opposite signs on the cross term, the honest joint
+interval is about 6% **wider** than treating the two shares as independent: the
+scalar-per-class version understates the variance. The covariance only narrows a
+**combined** quantity (a sum of shares), which for a two-part composition is the
+trivial constant 1. The real value of the vector estimator is therefore a
+correct interval plus a reusable covariance matrix for any downstream contrast,
+ratio, or difference -- not an automatic precision gain.
+
+The joint PPI row requires the per-class predicted-score columns. The RECOVER
+samples asset only stores `PLOTID` and the coarse reference label `r`, not the
+full `lc_2018`/`lc_2024` transition, so the comparison joins the extracted
+per-class predictions onto the cleaned RECOVER labels by `PLOTID`. Re-run
+`extract_ppi_gee.py` to produce those columns (it emits
+`yhat_nature`/`yhat_cropland`/`yhat_artificial`); the design-based joint rows use
+the cleaned RECOVER labels directly and need no export.
+
+On the real data (1,713 labelled points joined to 99,993 predicted-only points
+across 40 strata) the **tuned lambda is 0.0 for both classes**: the per-class
+predictions carry essentially no information about *which* destination an exit
+from Artificial went to. Among the 123 observed exits (86 to Nature, 37 to
+Cropland), `yhat_nature` is 0.623 for Nature-bound and 0.592 for Cropland-bound
+exits -- almost identical (correlation with the true destination 0.05) -- and
+`yhat_cropland` is exactly 0.0 for every exit, because the cropland score keys
+off a crop-loss trend that Artificial land leaving does not trigger. The
+predictions detect *that* land changed, not *what it became*, so the PPI
+rectifier has nothing to exploit and tuning drives lambda to zero. The joint PPI
+point estimate (Cropland share 25.8%) therefore stays close to the design-based
+22.7% but with a slightly **wider** interval (+/- 10.5 vs +/- 9.2 percentage
+points), because it also carries the finite predicted-only sampling variance.
+This mirrors the earlier scalar `built_loss` result: an uninformative proxy adds
+cost, not precision. PPI would only help here with a predictor that actually
+discriminates the exit destinations (e.g. a post-change land-cover
+classification), not a generic change-magnitude score.
+
+Run the vector-estimator formula tests with:
+
+```powershell
+uv run python -m pytest tests/test_vector_estimators.py -q
+```
+
 ## Methods implemented and compared
 
 All estimators target a proportion (× total area → km²); `Z = 1.96` for 95% intervals.
@@ -137,6 +355,96 @@ does not assume symmetry and may fix both the skew and the nonuniform-sampling i
 `habloss_landwater` overlaps `habloss_main` (152 duplicate coordinates). Coastal points have
 higher combined inclusion probability; needs a Hartley / Lohr–Rao adjustment or coastal
 change is double-counted — exactly where artificial expansion concentrates.
+
+## Recommended transition analyses
+
+### Estimate transition cells together
+
+Estimate the common 2018--2024 transition matrix jointly within each sampling
+frame, using the coarse classes Nature, Cropland, and Artificial. Joint
+estimation keeps the cells, row totals, and column totals internally consistent
+and retains the covariance needed for differences and ratios.
+
+This does not automatically narrow the confidence interval for an individual
+rare transition. Raking is only appropriate when the population marginals are
+known independently. Marginals derived from a classified map are predictions,
+not known truth, so forcing the sample estimates to match them could exchange
+lower variance for bias. Dirichlet-multinomial shrinkage may be tested as a
+model-based sensitivity analysis, but should not replace the primary
+design-weighted estimates.
+
+### Ratios and composition, explained simply
+
+An absolute-area estimate asks, for example, "How many square kilometres went
+from Artificial to Nature?" This is difficult to estimate precisely because
+the transition is rare.
+
+A composition estimate asks a simpler ecological question: "Of the land that
+left Artificial, what fraction became Nature and what fraction became
+Cropland?" Both parts of this comparison come from the same sampled locations
+and share much of the same sampling uncertainty. When one part moves up, the
+other tends to move down. Accounting for that relationship can make the
+percentage more precise than reporting two unrelated area estimates.
+
+For RECOVER, the corrected unique-plot design-weighted result is:
+
+- 22.7% of land leaving Artificial became Cropland;
+- 77.3% became Nature;
+- the 95% confidence interval for the Cropland share is 13.4--31.9%, or
+  approximately 22.7 +/- 9.3 percentage points.
+
+In plain language, the reference sample indicates that most detected exits
+from Artificial land were reversions to Nature rather than conversions to
+Cropland. The percentage is design weighted: the 39 Artificial-to-Cropland and
+109 Artificial-to-Nature observations do not contribute equally because their
+sampling strata represent different amounts of land.
+
+The current RECOVER R workflow binds 54 reverified plot IDs a second time
+because they disagree on the detailed transition but not on its binary target
+label. The reproducibility script reports both versions. Preserving the script
+exactly gives 22.6 +/- 9.2 percentage points; replacing every original record
+with its available reverified record gives the unique-plot result above. The
+small numerical difference does not change the ecological interpretation, but
+the unique-plot result is preferred because each sampled location contributes
+once.
+
+The complementary HABLOSS question is: "Of all new Artificial land, how much
+came from Nature rather than Cropland?" In the main 3,495-point HABLOSS frame,
+the provisional design-weighted estimate is:
+
+- 63.4% from Nature and 36.6% from Cropland;
+- 95% margin of approximately +/- 18.9 percentage points.
+
+This HABLOSS result is still imprecise and currently excludes the separate
+land--water augmentation, whose sampling frame must be reconciled before it is
+combined with the main frame.
+
+Raw sample counts must not be interpreted as area shares. For example, 171 of
+258 sampled Nature-to-Artificial observations originated in non-forest Nature,
+which gives an unweighted share of 66.3%. After applying the recovered HABLOSS
+sampling weights, the estimated non-forest share is instead 35.8% +/- 13.8
+percentage points; the complementary forest share is approximately 64.2%.
+Therefore, the earlier claim that 64% of Nature loss was non-forest is not
+supported by the weighted analysis.
+
+### Use an asymmetric ecological legend
+
+The two sampling programmes answer complementary directional questions:
+
+- HABLOSS estimates what existed before new Artificial land appeared. Keep
+  Forest and Other Nature as separate 2018 origin classes.
+- RECOVER estimates what Artificial land became. Its 2024 Nature destination
+  does not need a Forest/Other split.
+
+Use Nature, Cropland, and Artificial for the common 3 x 3 matrix, while
+retaining Forest versus Other Nature as a nested 2018 HABLOSS attribute. Do not
+pool the HABLOSS and RECOVER weights into one matrix unless their target
+populations and sampling frames have first been shown to be compatible.
+
+The immediate priorities are therefore the joint design-based covariance
+matrix, the RECOVER composition of exits from Artificial, and the HABLOSS
+composition of origins of new Artificial land. Raking and Dirichlet shrinkage
+are secondary sensitivity analyses rather than nearly free precision gains.
 
 ---
 
