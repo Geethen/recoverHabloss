@@ -1,7 +1,13 @@
 """Validate my difference_prop against the reference ppi_py implementation."""
-import numpy as np, sys
-sys.path.insert(0,'/tmp/claude-210017880/-home-geethen-singh-myprojects-recoverHabloss/826f16fa-0437-4884-9a60-1348c6d89952/scratchpad/validate')
+from pathlib import Path
+import sys
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from estimators import difference_prop, optimal_lam
+pytest.importorskip('ppi_py')
 from ppi_py import ppi_mean_pointestimate, ppi_mean_ci
 
 rng=np.random.default_rng(7)

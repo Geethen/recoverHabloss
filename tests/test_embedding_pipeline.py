@@ -1,10 +1,11 @@
 import sys
+import types
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "R" / "src"))
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from extract_embeddings_gee import (  # noqa: E402
     assign_blocks,
     block_id,
@@ -72,15 +73,49 @@ def test_embedding_band_names_are_distinct_per_year():
     assert difference_bands()[63] == "A63_diff"
 
 
-def test_check_label_columns_aborts_when_transition_fields_absent():
-    # This is the failure that silently produced an unlabelled predictor table.
-    with pytest.raises(RuntimeError, match="missing transition label"):
-        check_label_columns(["PLOTID", "r", "stratum"])
+def test_check_label_columns_aborts_without_the_join_key():
+    # PLOTID is what the interpreted transition is joined on; without it the
+    # extraction can only produce an unlabelled table.
+    with pytest.raises(RuntimeError, match="no PLOTID field"):
+        check_label_columns(["r", "stratum"])
 
 
 def test_check_label_columns_keeps_present_fields():
-    keep = check_label_columns(["PLOTID", "lc_2018", "lc_2024", "r"])
-    assert keep == ["PLOTID", "lc_2018", "lc_2024", "r"]
+    # The live asset carries only these two; the transition is joined locally.
+    assert check_label_columns(["PLOTID", "r"]) == ["PLOTID", "r"]
+    assert check_label_columns(["PLOTID", "r", "unrelated"]) == ["PLOTID", "r"]
+
+
+def test_attach_labels_aborts_when_nothing_joins(monkeypatch):
+    # A silent empty join would write an unlabelled table that only fails much
+    # later, in the model script.
+    import extract_embeddings_gee as extract
+
+    monkeypatch.setitem(
+        sys.modules,
+        "analyse_transition_composition",
+        types.SimpleNamespace(
+            read_clean_recover_labels=lambda root: (
+                None,
+                pd.DataFrame(
+                    {"PLOTID": ["z"], "lc_2018": ["nature"], "lc_2024": ["crop"]}
+                ),
+                None,
+            )
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "compare_ppi_subsets",
+        types.SimpleNamespace(
+            read_design_strata=lambda root: pd.DataFrame(
+                {"PLOTID": ["z"], "stratum": [1]}
+            )
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="No extracted plot matched"):
+        extract.attach_labels(pd.DataFrame({"PLOTID": ["a", "b"]}), Path("/nowhere"))
 
 
 def test_build_target_pools_rare_transitions():
@@ -100,6 +135,16 @@ def test_build_target_pools_rare_transitions():
 def test_build_target_requires_transition_columns():
     with pytest.raises(ValueError, match="lc_2018"):
         build_target(pd.DataFrame({"lc_2024": ["crop"]}), min_count=1)
+
+
+def test_build_target_refuses_uninterpreted_plots():
+    # Pooling these into 'other' would train the model to call an unlabelled
+    # plot a rare transition.
+    frame = pd.DataFrame(
+        {"lc_2018": ["nature", None], "lc_2024": ["crop", "crop"]}
+    )
+    with pytest.raises(ValueError, match="no interpreted transition"):
+        build_target(frame, min_count=1)
 
 
 def test_feature_columns_can_exclude_difference_bands():

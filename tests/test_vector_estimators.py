@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "R" / "src"))
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from estimators import (
     composition_ratio_ci,
     contrast_ci,

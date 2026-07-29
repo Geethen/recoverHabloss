@@ -3,6 +3,9 @@ Is the MEAN estimator on a binary map == proportion/area estimation? Verify iden
 test ppi_py's full estimator family on a realistic binary land-cover-change example.
 """
 import numpy as np
+import pytest
+
+pytest.importorskip('ppi_py')
 from ppi_py import ppi_mean_pointestimate, ppi_mean_ci, classical_mean_ci
 from ppi_py.cross_ppi import crossppi_mean_ci, crossppi_mean_pointestimate
 

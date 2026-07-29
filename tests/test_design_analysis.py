@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "R" / "src"))
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from design_analysis import read_stratum_areas_parallel, stratified_ratio
 from analyse_transition_composition import first_mode
 

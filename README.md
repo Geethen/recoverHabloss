@@ -68,7 +68,7 @@ sample membership files, GEE stratum-area exports, and the combined HABLOSS
 label file. It does not require a new Earth Engine export:
 
 ```powershell
-uv run python R/src/analyse_transition_composition.py --area-workers 32
+uv run python src/analyse_transition_composition.py --area-workers 32
 ```
 
 It writes:
@@ -81,7 +81,7 @@ After the GEE prediction extraction described below, reproduce the PPI
 variance decomposition with:
 
 ```powershell
-uv run python R/src/analyse_ppi_variance.py
+uv run python src/analyse_ppi_variance.py
 ```
 
 It writes `ppi_variance_summary.csv` and `ppi_variance_by_stratum.csv` under
@@ -91,6 +91,16 @@ be rebuilt. Formula tests are run with:
 ```powershell
 uv run python -m pytest tests/test_stratified_ppi.py tests/test_design_analysis.py -q
 ```
+
+To sync generated experiment results to Weights & Biases, first run the analyses
+that write CSV/JSON files under `data/analysis_results/`, then run:
+
+```powershell
+uv run python src/sync_results_to_wandb.py --mode online
+```
+
+Use `--mode offline` to create local W&B runs without credentials. Offline runs
+are written under `wandb/` and can later be uploaded with `wandb sync wandb/offline-run-*`.
 
 ## 10k and 100k GEE prediction experiment
 
@@ -102,9 +112,9 @@ Each stratum receives at least 50 predicted-only observations; the remainder is
 allocated in proportion to the mapped stratum area.
 
 ```powershell
-uv run python R/src/extract_ppi_gee.py
-uv run python R/src/compare_ppi_subsets.py
-uv run python R/src/bootstrap_ppi_subsets.py --n-bootstrap 2000
+uv run python src/extract_ppi_gee.py
+uv run python src/compare_ppi_subsets.py
+uv run python src/bootstrap_ppi_subsets.py --n-bootstrap 2000
 ```
 
 Generated data and `comparison.csv` are written to `data/ppi_gee/`, which is
@@ -112,7 +122,7 @@ ignored by Git. To rebuild only the nested samples from an existing maximum
 sample:
 
 ```powershell
-uv run python R/src/extract_ppi_gee.py --reuse-max
+uv run python src/extract_ppi_gee.py --reuse-max
 ```
 
 The comparison reports:
@@ -221,7 +231,7 @@ Reproduce the real-data RECOVER comparison (scalar-per-class vs joint
 design-based vs joint PPI) with:
 
 ```powershell
-uv run python R/src/compare_vector_estimators.py
+uv run python src/compare_vector_estimators.py
 ```
 
 It writes `data/analysis_results/vector_composition_comparison.csv`. On the real
@@ -480,8 +490,9 @@ labelled, unevenly.
 ## Repository layout
 
 ```
-R/src/
+src/
   estimators.py            # core: stratified, Hájek, difference/PPI, optimal λ (validated vs ppi_py)
+  sync_results_to_wandb.py # upload generated analysis_results CSV/JSON artifacts to W&B
   build_weights.py         # reconstruct HABLOSS design weights from GEE areas + cleaned samples
   recover_weights.py       # reconstruct RECOVER design weights (reads 155020_recover read-only)
   apply_weights_habloss.py # π-weighted HABLOSS transition matrix
@@ -499,7 +510,7 @@ tests/
 `estimators.py` needs only `numpy`/`scipy`. Validation against `ppi_py` needs the venv:
 
 ```bash
-python R/src/compare_recover.py                    # real-example comparison
+python src/compare_recover.py                    # real-example comparison
 python tests/test_estimators_sim.py                # known-truth coverage
 # ppi_py-dependent tests run under the ppi_py venv (numba, statsmodels)
 ```

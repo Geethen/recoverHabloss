@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parents[1] / "R" / "src"))
+sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from estimators import (
     optimal_lam_stratified,
     stratified_ppi_bootstrap,

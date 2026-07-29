@@ -206,9 +206,24 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
-# Generated GEE samples and estimator results
-data/ppi_gee/
-data/analysis_results/
+# Generated local data, model artifacts, and experiment outputs
+data/
+outputs/
+.aef_manifest_cache/
+catboost_info/
+lightning_logs/
+global_0.1_degree_representation/
+global_0.1_degree_tiff_all/
+wandb/
+
+# Local exploration workspaces
+scratchpad/
+olmoearth/
+olmoearth/.venv/
+
+# Editor-local settings
+.vscode/
+.claude/
 
 # PyPI configuration file
 .pypirc
