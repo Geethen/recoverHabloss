@@ -1,0 +1,83 @@
+name: Deploy labelling app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # config.js is BLANK in the repository on purpose: it carries the Apps
+      # Script /exec URL and the submit token, and this deployment is public.
+      # The real one comes from the secret, so a missing secret must FAIL rather
+      # than publish an app with no backend and no Earth Engine -- which looks
+      # fine until a labeller tries to save.
+      - name: Inject deployment config
+        env:
+          APP_CONFIG_JS: ${{ secrets.LABEL_APP_CONFIG_JS }}
+        run: |
+          if [[ -z "$APP_CONFIG_JS" ]]; then
+            echo "::error::LABEL_APP_CONFIG_JS is not set. Settings > Secrets and"
+            echo "::error::variables > Actions > New repository secret. Without it"
+            echo "::error::the app deploys with no Sheet, no roster and no Earth"
+            echo "::error::Engine, and says so only when somebody tries to label."
+            exit 1
+          fi
+          printf '%s\n' "$APP_CONFIG_JS" > app/config.js
+          # A secret with a stray quote deploys a page whose config never
+          # defines LABEL_APP_CONFIG, and the app then reads as "unconfigured".
+          node --check app/config.js \
+            || { echo "::error::LABEL_APP_CONFIG_JS is not valid JavaScript"; exit 1; }
+          grep -q 'LABEL_APP_CONFIG' app/config.js \
+            || { echo "::error::the secret does not set window.LABEL_APP_CONFIG"; exit 1; }
+
+      # The chips and the dense series are BAKED sidecars, and a batch deployed
+      # without them silently falls back to live Earth Engine -- or, with nobody
+      # signed in, to flat colour swatches. That is the failure this campaign
+      # already lost a day to, so it is checked here rather than discovered.
+      - name: Check the batches carry their bakes
+        run: |
+          fail=0
+          for batch in app/batches/*.json; do
+            case "$batch" in */index.json) continue;; esac
+            id=$(basename "$batch" .json)
+            for kind in chips dense; do
+              if grep -q "\"$kind\"" "$batch" && [[ ! -d "app/batches/${id}_${kind}" ]]; then
+                echo "::error::$batch declares $kind but app/batches/${id}_${kind}/ is missing"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
+      - name: Upload app artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: app
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

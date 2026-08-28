@@ -1,0 +1,18 @@
+{
+ "batches": [
+  {
+   "batch_id": "b001",
+   "file": "b001.json",
+   "n": 100,
+   "channel": "random",
+   "calibration": false,
+   "stage": null,
+   "created": "2026-08-26T20:19:22+00:00",
+   "assigned": {
+    "e1": 52,
+    "e2": 53
+   },
+   "assigned_to": "e1, e2"
+  }
+ ]
+}
