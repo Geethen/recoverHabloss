@@ -2190,7 +2190,13 @@ def _sprite_png(cells=9, cell=8):
     try:
         from PIL import Image
     except ImportError:                                  # pragma: no cover
-        pytest.skip("PIL unavailable")
+        #: `allow_module_level` because the ONLY caller is the module-level
+        #: `SPRITE_PNG` below. A skip raised during collection is a collection
+        #: ERROR, not a skip: it takes the whole file down, and the CI guard
+        #: that fails a run of nothing but skips does not fire on an error.
+        #: That is how this stayed green locally -- the geo env has pillow --
+        #: and failed on the first push, where the runner did not.
+        pytest.skip("PIL unavailable", allow_module_level=True)
     im = Image.new("RGB", (cell * cells, cell))
     for i in range(cells):                # a different colour per year cell
         for x in range(cell * i, cell * (i + 1)):
