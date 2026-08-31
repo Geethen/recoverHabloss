@@ -5,6 +5,35 @@
  * Deploy > New deployment > Web app, "Execute as: Me", "Who has access:
  * Anyone". Copy the /exec URL into app/config.js as sheetUrl.
  *
+ * THIS FILE IS THE SOURCE, NOT THE DEPLOYMENT -- read this before concluding
+ * anything about how the campaign is configured. The script that answers /exec
+ * is a COPY of this one, pasted into the Sheet's Apps Script editor, and it
+ * holds values that are deliberately absent here because this repository is
+ * public:
+ *
+ *   - SUBMIT_TOKEN below is '' HERE and set THERE. A blank token in this file
+ *     is the correct committed state and is not evidence of anything.
+ *   - the Earth Engine service-account key is in that project's Project
+ *     Settings > Script Properties, as EE_SERVICE_ACCOUNT_KEY. It is not in
+ *     git, and it cannot be in the page: the SDK throws on a browser-side
+ *     private key (see the Earth Engine section below).
+ *   - the /exec URL, the token and the expert roster reach the app from
+ *     app/config.js, or from the LABEL_APP_CONFIG_JS Actions secret on Pages.
+ *
+ * So do not diagnose the deployment by reading this file. Ask the deployment,
+ * which is the only thing that knows:
+ *
+ *   curl '<exec-url>?action=ping'
+ *     -> {"token_required":true,"ee_service_account":true,...}   both booleans
+ *        are answered by the LIVE script, not by anything in this repository
+ *
+ *   src/check_ee_service.py --url '<exec-url>'
+ *     -> the whole Earth Engine path in six steps, exit 0 only if all pass
+ *
+ * From inside this editor the equivalents are eeTokenSelfTest() and
+ * eeMapsSelfTest() at the foot of the Earth Engine section -- run BOTH, they
+ * test different IAM permissions.
+ *
  * THREE THINGS THIS FILE EXISTS TO GET RIGHT
  * ------------------------------------------
  * 1. CONCURRENT WRITERS. Several interpreters label at once and each save is
@@ -47,6 +76,16 @@ var LOG_NAME = 'activity';
  * the app to can read it. It raises the bar from "anyone who finds the URL" to
  * "anyone you gave the app to", which is the actual threat here. Leave empty to
  * disable the check.
+ *
+ * IT GATES EVERY ACTION, NOT JUST THE SHEET -- `ee_token` included, which hands
+ * back a live Earth Engine bearer token for the service account. Only `ping` is
+ * open. So "the token is public" and "the service account is reachable" are the
+ * same sentence; see the Earth Engine section for what bounds that.
+ *
+ * BLANK HERE IS DELIBERATE. The deployed copy of this file carries the real
+ * string; this repository is public. Read a blank as "not committed", never as
+ * "the deployment has no token" -- `?action=ping` answers that with
+ * `token_required`.
  */
 var SUBMIT_TOKEN = '';
 
@@ -307,9 +346,18 @@ function dropReadCaches_() {
  * A web app deployed "Anyone", plus a token that ships inside config.js, means
  * anyone you gave the app to can mint Earth Engine tokens for your project.
  * That is a real step up from "can write rows to a sheet", and two things bound
- * it. Give the service account `roles/earthengine.viewer` and nothing more: it
- * can read and compute, it cannot write assets or start exports. And set
- * SUBMIT_TOKEN, which this action checks like every other one.
+ * it. NOT `roles/earthengine.viewer`, which is what this said and is what the
+ * deployment was granted: measured 2026-08-28, viewer carries
+ * `earthengine.computations.create` and NOT `earthengine.maps.create`, so the
+ * account computes, self-tests clean and is refused every map tile -- every
+ * auxiliary overlay in the app comes back empty. The grant is
+ * `roles/earthengine.writer` AND `roles/serviceusage.serviceUsageConsumer`.
+ * Note what writer widens: this token, which every browser that opens the app
+ * is handed, can then create and delete assets in the project. So the campaign
+ * account belongs in a project that holds nothing -- or on a custom role of
+ * earthengine.computations.create + earthengine.maps.create +
+ * serviceusage.services.use, which is the old bound with the overlays working.
+ * And set SUBMIT_TOKEN, which this action checks like every other one.
  *
  * WHY IT IS CACHED
  * ----------------
@@ -535,7 +583,11 @@ function eeTokenSelfTest() {
                + '"required permission to use project" is the SERVICE USAGE '
                + 'role, not the Earth Engine one. Grant ' + key.client_email
                + ' both roles/serviceusage.serviceUsageConsumer and '
-               + 'roles/earthengine.viewer on project ' + token.project
+               + 'roles/earthengine.writer on project ' + token.project
+               + ' -- WRITER, not viewer: viewer was measured to grant '
+               + 'earthengine.computations.create and NOT '
+               + 'earthengine.maps.create, so a viewer account passes this '
+               + 'probe and draws no overlays'
                + ' at https://console.cloud.google.com/iam-admin/iam?project='
                + token.project + ' -- a new grant takes a minute or two to '
                + 'propagate.');
@@ -565,7 +617,15 @@ function eeMapsSelfTest() {
       payload: JSON.stringify({
         expression: { result: '0', values: { '0': { functionInvocationValue: {
           functionName: 'Image.constant',
-          arguments: { value: { constantValue: 1 } } } } } } }),
+          arguments: { value: { constantValue: 1 } } } } } },
+        // REQUIRED, and leaving it out fails in the shape of the thing this
+        // test looks for. `maps.create` answers HTTP 400 "Missing or
+        // unrecognized image file format: IMAGE_FILE_FORMAT_UNSPECIFIED"
+        // however complete the account's IAM is -- so without this line the
+        // probe can never go green, and a deployment that has just been fixed
+        // still reports that it cannot draw. The client sends it too:
+        // `convert_to_image_file_format(None)` is exactly this value.
+        fileFormat: 'AUTO_JPEG_PNG' }),
       // Same header, same reason as above: it is what makes the serviceusage
       // check fire, and without it this passes on the broken deployment too.
       headers: { Authorization: 'Bearer ' + token.access_token,
@@ -578,6 +638,12 @@ function eeMapsSelfTest() {
   }
   Logger.log('Earth Engine answered HTTP ' + code + ' to maps.create: '
              + probe.getContentText().slice(0, 400));
+  if (code === 400) {
+    Logger.log('A 400 is this REQUEST, not the account -- it says nothing '
+               + 'about what the service account may do. Do not grant roles on '
+               + 'the strength of it.');
+    return;
+  }
   Logger.log('If that says "Permission \'earthengine.maps.create\' denied", the '
              + 'account can compute and cannot draw. Grant ' + key.client_email
              + ' an Earth Engine role on project ' + token.project

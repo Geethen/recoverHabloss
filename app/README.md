@@ -136,6 +136,45 @@ curl -fsSL https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js  -o app/vendo
 curl -fsSL https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css -o app/vendor/maplibre-gl.css
 ```
 
+**The CDN fallback carries an `integrity` hash, so bumping the version is two
+steps, not one.** It is a third-party script entering a page that holds the
+submit token. Regenerate both digests and paste them into the `document.write`
+fallback at the top of `label_app.html`:
+
+```bash
+for f in app/vendor/maplibre-gl.js app/vendor/maplibre-gl.css; do
+  echo "$f  sha384-$(openssl dgst -sha384 -binary "$f" | openssl base64 -A)"
+done
+```
+
+A stale hash does not degrade — the browser refuses the file outright, and only
+on the machine that is missing `vendor/`. Change the URL and the digest
+together.
+
+### Security, and what a single static file can and cannot do
+
+The page carries three `<meta>`-able defences — `object-src 'none'`,
+`base-uri 'self'`, `form-action 'none'` — plus a referrer policy. The app has
+no `<form>`, no `<object>` and no `eval`, so all of them cost nothing, and
+`base-uri` is the one that matters: an injected `<base>` would re-point every
+relative fetch in the app, sprites and batch JSON included.
+
+**`script-src` and `connect-src` are deliberately absent, and that is not an
+oversight.** The Apps Script `/exec` URL and the Earth Engine hosts are
+per-deployment and arrive from `config.js` at runtime, so any host list written
+into the page would be wrong for somebody — and would fail as *"the overlays do
+not draw"*, which is the same silent class of failure the deploy workflow exists
+to catch. `frame-ancestors` is header-only and is ignored in a meta tag; a host
+that can set response headers should add `frame-ancestors 'none'` and
+`X-Content-Type-Options: nosniff` there.
+
+Locking `script-src` down properly needs the inline scripts hashed, which needs
+a build step, and there is no build step on purpose — this is a folder you
+upload. The groundwork is done either way: there are **no inline event handler
+attributes** left in the page. Dialog buttons carry `data-act` and are dispatched
+by one delegated listener (`LOADING_ACTIONS`), and CI fails the build if an
+`onclick=` reappears.
+
 ### Who is labelling
 
 **The header is a roster dropdown, not a text box, and the reason is the
@@ -277,6 +316,17 @@ find out until the *next* round's `--exclude-labelled` excluded nothing.
 
 ## Three decisions in the app that are design, not taste
 
+**The whole call is pinned; only the evidence scrolls.** The panel is two
+bands. The head is the *form* — both dates, the transition it derives, both flag
+groups, *what the imagery was like*, confidence, notes, and **Save** — and it
+does not move. Everything below it is evidence: the spectral profile, the index
+series, the filmstrip, the other people's maps, the model's opinion. The
+evidence block is nine years long, so anything left inside it is past the bottom
+of the panel, and the last four items in that form used to be. If the window is
+short enough that the form itself will not fit, `#panel-head-scroll` takes the
+overflow — the form shortens, the evidence is not deleted — and the transition
+read-out, the two call flags and the buttons stay pinned below it even then.
+
 **Batches are small and sequential.** §AL4 measured the same 2,000 acquisitions
 at **−0.003** change-F1 delivered as one batch and **+0.031** delivered as
 twenty, against a paired floor of 0.016. The default batch size is 100. If the
@@ -302,7 +352,36 @@ capture dates, and most of them will turn out to be the latter.
 ## Using it
 
 Pick 2018 and 2024 from {Nature, Cropland, Artificial}; the transition is
-derived. `cannot interpret` is not a class call — it clears both dates and the
+derived. **The classes are LUCAS as the campaign cribsheet states them**, and
+the legend links the full document from its summary and from inside the fold —
+`cribsheetUrl` in `config.js`, with the RECOVER cribsheet as the default so a
+dragged-in copy of `app/` still has it. Three of the cribsheet's rules decide
+most of the arguable points and the legend now teaches all three:
+
+* **Ploughing, not grass.** Cropland is planted and cultivated, and it includes
+  grassland *only* where it is cleared or sown inside a rotation. Permanent
+  pasture and rough grazing are **Nature**. This is the boundary the ledger says
+  caps change-F1.
+* **Bare ground is Nature unless it is being worked.** Sand and rock belonging
+  to a mine, a quarry or a development site are **Artificial**. This is §AL-T's
+  error in one sentence: the largest on the map, and one the model is *more*
+  confident about when it is wrong.
+* **A feature is Artificial for what it is, not what covers it.** A grassed car
+  park, a farmyard, a cemetery and an unsealed road are Artificial; a road,
+  railway or runway counts over 3 m wide; greenhouses, solar farms and dumps are
+  Artificial. A park inside a city is coded by its cover, so it is Nature.
+
+**A felling is whichever class was growing**, and this is the fourth rule.
+B84 makes a *crop* plantation Cropland — oil palm, rubber, coffee, tea, cocoa,
+coconut, and with B70/B80 also fruit, olives, vines and short-rotation willow —
+while a stand grown for timber is in no B class and falls to Nature with
+everything else that is neither farmed nor built. So clearing either one and
+leaving it is Nature → Nature or Cropland → Cropland, and the three-class
+transition cannot carry a clearance on its own: call the dates as you see them
+and tick **change seen, ends match**, the only place a clearance with no class
+change is recorded. Natural forest cleared **to** a crop plantation is
+**Nature → Cropland**, and that one is the habitat loss the campaign exists to
+count — so what replaced the trees decides the second date. `cannot interpret` is not a class call — it clears both dates and the
 row is excluded from training, so use it for cloud and missing imagery rather
 than guessing.
 
@@ -331,7 +410,25 @@ deferred: the end-of-batch screen lists them. The arrow keys keep drafts too.
 
 **Every save gets a toast** — `saved · Nature → Artificial · ⌫ undo`. It also
 makes a stuck key visible: three identical toasts in a row is a thing you
-notice.
+notice. It holds for four seconds and stops its own timer while the pointer or
+the keyboard is on it, because reaching for an undo must not race the thing that
+takes the undo away.
+
+**The end-of-batch screen carries the two actions it names.** It says "sync it,
+then take the next batch", and it now has a **sync** button that reports what is
+still held and a **next batch** button that opens the next manifest entry
+assigned to you. Both used to mean closing the dialog and going to find controls
+in the card stack, at the one moment in the loop where §AL4's whole finding
+depends on the next batch actually being taken.
+
+**Two flags sit with the call, four sit with the imagery.** *unsure* and *flag
+for review* qualify the answer, so they are pinned in the same pane as the two
+date buttons and the transition read-out — they used to scroll away with the
+evidence, which is the wrong pane for something you decide at the moment you
+decide the label. *cannot interpret*, *mixed cell*, *imagery date gap* and
+*change seen, ends match* describe what you were looking at and stay with it.
+The split is a `where: 'call'` field on `FLAGS`, and both panes render from the
+one list so a flag cannot end up in neither.
 
 **When there is a change, say when.** A year field appears on any change call.
 Wayback has already made you step through the dates, so it costs a click, and it
@@ -351,9 +448,32 @@ label throws away what you saw.
 | <kbd>←</kbd> <kbd>→</kbd> | move without saving |
 | <kbd>Backspace</kbd> | back to the point you just left, answer reloaded (the toast's ⌫ undo) |
 | <kbd>Space</kbd> *hold* | flicker the swipe to the B date (turns the swipe on if it is off) |
+| <kbd>Tab</kbd> | walk the controls. A tabbed control owns its own <kbd>Enter</kbd> / <kbd>Space</kbd>; a *clicked* one does not |
+| <kbd>Esc</kbd> | close the chip lightbox, or any dialog. **Not** the identity gate |
 
 <kbd>←</kbd> / <kbd>→</kbd> step the **chip lightbox** while it is open; point
 navigation resumes when it is closed.
+
+**The whole app is operable from the keyboard, and the shortcut table is not the
+whole of that.** The class buttons, the flags, the filmstrip cells, the point
+strip and the ESRI annual swatches are all reachable with <kbd>Tab</kbd> and
+carry a visible focus ring. Two rules make the two keyboards coexist, and both
+were bugs first:
+
+* **A control the keyboard is sitting on owns <kbd>Enter</kbd> and
+  <kbd>Space</kbd>**; everything else stays an app-wide hotkey. The shortcut
+  handler is on `window`, and before this it `preventDefault`ed both keys out
+  from under every button on the page — Tab to *Defer*, press Enter, and the
+  point was **saved**.
+* **Only a <kbd>Tab</kbd> hands a control that ownership**, never a mouse click.
+  The obvious implementation, `:focus-visible`, is wrong here: Chromium flips it
+  true the moment a key arrives at the focused element, so a button clicked with
+  the *mouse* claimed the next Enter — clicking a change-year and pressing Enter
+  re-toggled the year off instead of saving.
+
+The point strip uses a **roving** <kbd>Tab</kbd> stop — one for the strip, not
+1,250 — and <kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd> walk it
+once you are in it.
 
 **Wayback is the instrument.** Turn it on, press **snap to 2018 ⇆ 2024**, and the
 swipe is the release nearest 2018 on the left and the release nearest **2024** on
@@ -491,14 +611,23 @@ map, one cloud-masked growing-season composite per year, each with a red pixel
 ring painted in — without it a 10 m chip of an agricultural landscape is
 unlocatable and is worse than nothing.
 
-**The vis scheme is one setting with two kinds of member**, and it drives four
-things: the chip pixels, the colour of every dot on the annual chart, the
-colour of a chip cell before its image lands, and — for an index — which series
-the chart plots. Four three-band mixes (default `SWIR1/NIR/GREEN`) and three
-colour-ramped indices (`NDVI`, `NDMI`, `NBR`). The index band pairs are defined
-**once**, in `CHIP_INDEX`, so the chip, the dot and the plotted line are three
-views of one number rather than three definitions of it. Scheme and chip width
-are remembered per browser.
+**The vis scheme is one setting with two kinds of member**, and it drives three
+things: the chip pixels, the colour of a chip cell before its image lands, and
+— for an index — which series the chart plots. Four three-band mixes (default
+`SWIR1/NIR/GREEN`) and three colour-ramped indices (`NDVI`, `NDMI`, `NBR`). The
+index band pairs are defined **once**, in `CHIP_INDEX`, so the chip, the dot and
+the plotted line are three views of one number rather than three definitions of
+it. Scheme and chip width are remembered per browser.
+
+**The chart's dots follow the SERIES, not the scheme.** A dot is painted on the
+ramp of whichever index is plotted under it, so its colour and its height are
+the same number said twice and on NDVI the ledger's 0.31 cut is a colour
+boundary as well as a line. They used to follow the chip scheme, which meant
+that plotting NDVI over a `SWIR1/NIR/GREEN` filmstrip coloured them from three
+bands with nothing to do with the curve drawn through them. `evVisColor` takes
+the combo as an argument for exactly this reason — the strip previews the chip,
+the chart reads the series — and `CHIP_INDEX` is still the single definition
+both go through.
 
 **Every cell opens already carrying that year's colour**, mixed from the baked
 reflectance the batch already holds. It costs nothing, it works with Earth
@@ -663,25 +792,72 @@ panel now distinguishes them:
 **`Permission 'earthengine.maps.create' denied`** is the one that has actually
 happened, and it is IAM rather than the app: a brand-new service account has no
 roles at all, so the campaign account mints a token, computes, and is refused
-every map tile. Grant the service account — its address is logged by
-`eeTokenSelfTest()` — `roles/earthengine.viewer` and
+every map tile. **`roles/earthengine.viewer` does not fix it** — measured on
+this deployment, viewer grants `earthengine.computations.create` and *not*
+`earthengine.maps.create`, so a viewer account passes `eeTokenSelfTest()` and
+draws nothing. Grant the service account — its address is logged by
+`eeTokenSelfTest()` — `roles/earthengine.writer` and
 `roles/serviceusage.serviceUsageConsumer` on the project:
 
 ```bash
 gcloud projects add-iam-policy-binding ee-gsingh \
   --member=serviceAccount:<the address eeTokenSelfTest logged> \
-  --role=roles/earthengine.viewer
+  --role=roles/earthengine.writer
 ```
 
 or the same two roles at `console.cloud.google.com/iam-admin/iam?project=…`.
+Check what the account actually holds, rather than what you meant to grant:
+
+```bash
+gcloud projects get-iam-policy ee-gsingh \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:<the address>" --format="table(bindings.role)"
+```
+
 A new grant takes a minute or two to propagate. **Run `eeMapsSelfTest()` in the
 Apps Script editor to confirm** — `eeTokenSelfTest()` alone cannot see this,
 because `earthengine.maps.create` is a separate permission from
 `earthengine.computations.create` and the compute probe passes without it.
 
+Both of those live inside the Apps Script editor, which means they are run by
+hand and never before a campaign. The same walk from a terminal, against the
+deployment as a labeller's browser sees it, is:
+
+```bash
+$G src/check_ee_service.py --url '<the /exec URL>' [--token <submitToken>]
+```
+
+It pings the deployment, mints a token through it, and then asks Earth Engine
+for a computation, a map, a tile of that map and a real overlay from the panel
+(`dw24` over a batch point) — the last two being what neither self-test does.
+`getMapId` validates the *request*, so an expression that mints and then fails
+per tile passes both editor probes and draws nothing. Exit status is 0 only if
+every step passes, so it can gate a campaign rather than being remembered.
+
 #### If the chips still look like flat colours
 
-In the browser console, in order:
+**Read the note under the strip first — there are three of them and they say
+different things.** A grey box saying *baked chips are not being used* is a
+fault and names which condition failed. A box with a blue edge is not a fault:
+either the scheme is an **index**, which is never baked and is always computed
+live (a few seconds a point), or the strip is **flat because the ground is** —
+at a uniform surface the three channels' shared ramp is thousands of DN wide
+against a per-band spread of a hundred or two, and nine identical orange squares
+are the right picture of a desert. That last one is *not* fixable by narrowing
+the ramp; see **The display ramp is measured per point** above for why both
+alternatives are worse.
+
+Two things that used to look like a broken bake and are now handled:
+
+* **A remembered width outliving its batch.** `chipVis.w` is persisted and the
+  sprite path needs it to equal `chips.width_m` exactly, so one nudge of the
+  width slider disabled every baked chip in every batch for that browser, across
+  reloads. Opening a batch that carries a bake now snaps the width to it. Moving
+  the slider mid-batch still drops to live Earth Engine, on purpose.
+* **An index scheme reported as a bake miss.** NDVI / NDMI / NBR were reported
+  down the same channel as a stale bake, so a design decision read as a fault.
+
+If none of that applies, in the browser console, in order:
 
 ```js
 S.batch.chips.version          // 'chip2', or the bake is stale
@@ -689,6 +865,7 @@ S.batchUrl                     // '' means the batch was opened as a FILE
 chipVis                        // .w must equal S.batch.chips.width_m
 chipSpriteUrl(S.points[S.i])   // the URL, or null
 chipBakeMiss(S.points[S.i])    // the reason, in words
+chipFlatNote(S.points[S.i])    // set when the flatness is the ground, not a bug
 ```
 
 A hard reload (<kbd>Ctrl</kbd>/<kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>R</kbd>)
@@ -735,6 +912,15 @@ interpreter will wait. Double-click or **⤢** opens the lightbox, which shows
 the capped chip immediately and then replaces it with the **uncapped** composite
 at 512 px, and owns <kbd>←</kbd>/<kbd>→</kbd> while it is up.
 
+**The lightbox covers the map, not the panel.** Stepping years in it has always
+driven the spectral profile and the index chart — `renderLightbox` calls
+`selectEvYear(…, {quiet: true})` — but the backdrop was `inset: 0` and they
+updated underneath it, which is the whole linked reading rendered invisible. It
+now stops at the panel edge (`right: var(--panel-w)`; full-width under 900 px,
+where there is no room for both), scrolls the chart into view on open, and hides
+the standing explanations under each reading while it is up so both fit. The
+panel stays live, so the call can be made from the enlarged chip.
+
 ---
 
 ## Earth Engine (optional)
@@ -775,6 +961,48 @@ tile at every new location. Five specifics worth knowing:
   because the draw is global and most points fall outside it.
 * An empty overlay reads **"outside coverage"**, never blank. A layer with no
   data must not look like "no disturbance".
+* **Wayback is a basemap and sits under every overlay.** Both used to insert
+  before the `labels` layer, and `addLayer(l, beforeId)` puts a layer
+  immediately *below* `beforeId` — so whichever was touched last won the top
+  slot, and both orders happen in normal use. Pick an overlay and then turn the
+  archive on and Wayback covered the overlay; step to the next point, which
+  re-mints the overlay per point, and a 70%-opaque class raster covered the
+  imagery being labelled from. The archive now has a slot of its own
+  (`imagery-slot`, declared in the style), so the order is a property of the
+  style rather than of what was clicked when.
+
+### The pixel inspector
+
+Everything else in the panel is baked **at the plot centre**, which is the right
+default and the wrong instrument in front of a mixed cell — the interpreter's
+question there is about *that* field, not this one. Tick **🔎 Inspect pixel
+values** in the Earth Engine card and click anywhere on the map:
+
+* **Sentinel-2 at the clicked pixel, 2018 and 2024, with the difference** — six
+  bands as reflectance, then NDVI, NDMI and NBR. It is the *same* composite: it
+  goes through `s2Chip`, the one definition of the growing-season median that
+  the filmstrip and the chip ramp also use, and the indices are computed in the
+  browser from the six numbers printed above them rather than asked of Earth
+  Engine separately, so the table cannot disagree with itself, with the chart,
+  or with the chips. The read-out names the season it used, because the season
+  comes from the **click's** latitude and a click across the equator from the
+  point is a different window.
+* **the active overlay, decoded** — `6` is not a reading, `built (6)` is. Class
+  codes go through the layer's own table (and through ESRI's *remapped* codes,
+  not its published ones); quantities carry units. Each is stamped with the
+  layer's end year, exactly as its legend is.
+
+Two properties it keeps. It is **at the click, never at the point**: `imagery_a`
+and `imagery_b` on the saved row describe the point whatever was last clicked,
+Wayback's own click read-out already draws that line, and nothing the inspector
+says is written anywhere or survives onto the next point. And **a masked pixel
+is an answer** — `dwbuilt`, `obtemporal`, `hansen` and the two disagreement
+layers are masked differences, so no value at a stable point is the layer saying
+*nothing here* and is reported as that rather than as a failure.
+
+It is one Earth Engine round trip per click: both `reduceRegion` calls are
+combined server-side into a single dictionary and evaluated once, because the
+measured cost here is the request and not the computation (§AL9).
 
 ### Nobody signs in — the campaign's service account
 
@@ -803,9 +1031,11 @@ Once, per deployment:
 
 1. **Make the service account** in the Cloud project that is registered for
    Earth Engine: *IAM & Admin ▸ Service Accounts ▸ Create*. Give it
-   **Earth Engine Resource Viewer** (`roles/earthengine.viewer`) and
+   **Earth Engine Resource Writer** (`roles/earthengine.writer`) and
    **Service Usage Consumer** (`roles/serviceusage.serviceUsageConsumer`), and
-   nothing else — the role is load-bearing, see below.
+   nothing else — the role is load-bearing, see below. **Writer, not Viewer**:
+   the overlays need `earthengine.maps.create` and Viewer does not carry it,
+   which cost this deployment a labelling session.
 2. **Download a JSON key**: *Keys ▸ Add key ▸ Create new key ▸ JSON*.
 3. **Paste it into Script Properties, not into a file.** In the Sheet's Apps
    Script editor: *Project Settings ▸ Script properties ▸ Add script property*,
@@ -837,9 +1067,14 @@ gave the app to can mint Earth Engine tokens for your project. That is a real
 step up from "can write rows to your sheet", and two things bound it, both of
 which you have to actually do:
 
-* **`roles/earthengine.viewer` and no more.** It can read and compute; it
-  cannot write assets or start exports. Do not reach for Editor or Owner to
-  make a permissions error go away.
+* **`roles/earthengine.writer` and no more.** Do not reach for Editor or Owner
+  to make a permissions error go away. Writer is already wider than this app
+  needs — the token every browser is handed can create and delete assets in the
+  project — so put the campaign account in a project that holds nothing, or
+  give it a **custom role** of `earthengine.computations.create` +
+  `earthengine.maps.create` + `serviceusage.services.use`, which is exactly
+  what the overlays do and nothing else. Viewer is the tempting middle and it
+  does not work: no `earthengine.maps.create`, no overlays.
 * **Set `SUBMIT_TOKEN`.** `ee_token` is behind the same check as every other
   action, which raises the bar from *anyone who finds the /exec URL* to *anyone
   you gave the app to* — the same threat model the Sheet writes already accept.

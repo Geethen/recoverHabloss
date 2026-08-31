@@ -3,6 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- What a `<meta>` CSP can carry that is worth carrying here. This page holds
+     the submit token, so an injected `<base>` (which would re-point every
+     relative fetch, sprites and batch JSON included) and an injected `<object>`
+     are worth closing off, and the app uses neither plus no `<form>` and no
+     `eval` -- so all three cost nothing.
+
+     `script-src`/`connect-src` are DELIBERATELY absent. The Apps Script /exec
+     URL and the Earth Engine hosts are per-deployment and arrive from
+     `config.js` at runtime, so any host list written here would be wrong for
+     somebody and would fail as "the overlays do not draw" -- exactly the silent
+     class of failure the deploy workflow exists to prevent. `frame-ancestors`
+     is header-only and is ignored in a meta tag; a host that can set headers
+     should add it.
+
+     A build step could hash the inline scripts and lock the rest down. There
+     is no build step on purpose (app/TODO.md, "Hosting"): this is a folder you
+     upload. -->
+<meta http-equiv="Content-Security-Policy"
+      content="object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>RECOVER · land-cover transition labelling</title>
 <!-- Every host the labelling loop touches, opened before anything asks for a
      tile. Points are 5 km cells drawn globally, so consecutive points share no
@@ -27,10 +47,19 @@
 // The fallback, and only the fallback: if the local copy is not there,
 // maplibregl is undefined and the CDN gets one chance before buildMap() runs.
 if (typeof maplibregl === 'undefined') {
+  // Subresource integrity, because this is a third-party script entering a
+  // page that carries the submit token. Both digests are of the files in
+  // app/vendor/, which are byte-identical to what unpkg serves for 4.7.1 --
+  // verified, not assumed. `crossorigin` is required for SRI to be checked at
+  // all on a cross-origin fetch. Regenerate both alongside the curl in
+  // app/README.md:
+  //   openssl dgst -sha384 -binary <file> | openssl base64 -A
   document.write('<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/'
-    + 'maplibre-gl.js"><\/script>');
+    + 'maplibre-gl.js" integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznw'
+    + 'A0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj" crossorigin="anonymous"><\/script>');
   document.write('<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/'
-    + 'maplibre-gl.css" rel="stylesheet">');
+    + 'maplibre-gl.css" rel="stylesheet" integrity="sha384-MinO0mNliZ3vwppuPO'
+    + 'UnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V" crossorigin="anonymous">');
 }
 </script>
 <style>
@@ -48,6 +77,28 @@ if (typeof maplibregl === 'undefined') {
     --accent: #1a56db; --accentbg: #eff4ff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* Keyboard focus was invisible everywhere -- there was not one `:focus` rule
+     in the file, in an app whose whole interaction model is keys. `:focus-
+     visible` rather than `:focus` so a mouse click does not leave a ring
+     parked behind it. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
+                   border-radius: 4px; }
+  /* Dark grounds: the accent blue disappears into them. Inset, because an
+     outward ring on a chip inside an `overflow-x` strip is clipped. */
+  #ev-strip :focus-visible, #lightbox :focus-visible {
+    outline-color: #fff; outline-offset: -3px; }
+
+  /* Nine `chipwait` sheens loop behind the map at once, and `nudge` shakes a
+     required field. Both are decoration on an instrument. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
   body { font-family: "Helvetica Neue", Arial, sans-serif; color: var(--ink);
          background: var(--bg); display: flex; flex-direction: column;
          height: 100vh; overflow: hidden; font-size: 13px; }
@@ -78,7 +129,9 @@ if (typeof maplibregl === 'undefined') {
   .pill {
     font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
     border: 1px solid var(--line); background: #fff; white-space: nowrap;
+    font-family: inherit; color: var(--ink); line-height: 1.45;
   }
+  button.pill:hover { background: #f8fafc; }
   .pill.ok   { background: var(--okbg);   color: var(--ok);   border-color: var(--okline); }
   .pill.warn { background: var(--warnbg); color: var(--warn); border-color: var(--warnline); }
   .pill.err  { background: var(--errbg);  color: var(--err);  border-color: var(--errline); }
@@ -106,7 +159,7 @@ if (typeof maplibregl === 'undefined') {
   }
   .card {
     background: #fff; border: 1px solid var(--line); border-radius: 8px;
-    padding: 7px 10px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.12);
+    padding: 6px 10px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.12);
     width: 240px; flex-shrink: 0;
   }
   #btn-cards {
@@ -118,12 +171,30 @@ if (typeof maplibregl === 'undefined') {
   #btn-cards:hover { background: #f8fafc; }
 
   .card > .hdr { font-weight: 700; display: flex; align-items: center; gap: 6px;
-                 margin-bottom: 5px; cursor: pointer; user-select: none; }
-  .card > .hdr .caret { margin-left: auto; color: var(--muted); font-size: 10px; }
+                 margin-bottom: 5px; cursor: pointer; user-select: none;
+                 /* a <button>, so the UA styling comes back off */
+                 width: 100%; border: none; background: none; padding: 0;
+                 font-family: inherit; font-size: 12px; color: inherit;
+                 text-align: left; }
+  .card > .hdr .caret { margin-left: auto; color: var(--muted); font-size: 11px; }
+  /* Reference, not instrument: Earth Engine is optional by design and the
+     shortcut list is read once. Recessive so the eye lands on the two cards
+     that are actually used per point. */
+  .card.aux { background: #fcfcfd; }
+  .card.aux > .hdr { color: var(--muted); font-weight: 600; }
+  /* The type scale went up; the control stack must not, because what it sits
+     on is the imagery being labelled. Tighter leading buys back the px. */
   .card label { display: flex; align-items: center; gap: 7px; cursor: pointer;
-                padding: 1px 0; line-height: 1.35; }
-  .card .note { color: var(--muted); font-size: 10.5px; margin-top: 5px;
-                line-height: 1.4; }
+                padding: 0; line-height: 1.3; }
+  /* The switch that brings the app's own instrument to life, which read as an
+     ordinary checkbox above six greyed-out controls. */
+  .card label.master { padding: 4px 6px; margin: -2px -4px 2px; border-radius: 6px;
+                       background: var(--accentbg); border: 1px solid #d6e2ff;
+                       align-items: flex-start; }
+  .card label.master input { margin-top: 2px; }
+  .card label.master b { color: var(--accent); }
+  .card .note { color: var(--muted); font-size: 11.5px; margin-top: 4px;
+                line-height: 1.35; }
   .card .note:empty { display: none; margin: 0; }
   .card select, .card input[type=text] {
     flex: 1; font-size: 12px; padding: 3px 4px; border: 1px solid var(--line);
@@ -134,9 +205,15 @@ if (typeof maplibregl === 'undefined') {
     border-radius: 5px; cursor: pointer; font-size: 12px; line-height: 1.3;
     padding: 4px 8px; font-weight: 700;
   }
-  .card button:disabled { color: #bbb; cursor: default; background: #f4f5f7; }
+  /* Was #bbb on #f4f5f7 -- 1.76:1. The Wayback card ships with six disabled
+     controls, so the app's own "instrument" opened as an unreadable smear. */
+  .card button:disabled { color: var(--muted); cursor: default;
+                          background: #f4f5f7; }
   .card button:not(:disabled):hover { background: #e8eeff; }
-  .row { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+  .row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  /* The most-clicked buttons in the app, and a bare chevron made them ~24x22. */
+  #wb-prev, #wb-next, #wb-b-prev, #wb-b-next {
+    min-width: 28px; min-height: 26px; }
 
   /* ── wayback swipe compare ──────────────────────────────────────────── */
   #wb-compare-map { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
@@ -172,26 +249,56 @@ if (typeof maplibregl === 'undefined') {
   }
   #panel-grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px;
                 z-index: 5; cursor: col-resize; background: transparent; }
-  /* The call does not scroll. Head and foot are fixed flex children; only the
-     evidence between them moves. `min-height:0` on the scroller is what stops
+  /* The call does not scroll. The head is a fixed flex child; only the
+     evidence below it moves. `min-height:0` on the scroller is what stops
      a long evidence block from stretching the flex column instead of
      scrolling inside it. */
-  /* `max-height` is the short-window guard: on a laptop the head is ~250 px
-     of a 700 px panel, but a fixed head that is allowed to grow without limit
-     can squeeze the evidence to nothing on a small screen, which is the
-     failure this whole split was meant to prevent. */
-  #panel-head { flex: 0 0 auto; padding: 12px 14px 10px;
+  /* `max-height` is the short-window guard: a head that is allowed to grow
+     without limit can squeeze the evidence to nothing on a small screen, which
+     is the failure this whole split was meant to prevent. It is 76% rather
+     than the old 62% because the head now carries the whole form -- the two
+     dates, both flag groups, confidence, notes and the buttons -- and 62%
+     put `#panel-head-scroll` into permanent overflow on a laptop, which is
+     the same disappearing act one level in. */
+  #panel-head { flex: 0 1 auto; min-height: 0; padding: 12px 14px 10px;
                 border-bottom: 1px solid var(--line); background: #fff;
-                max-height: 58%; overflow-y: auto; }
+                max-height: 76%; display: flex; flex-direction: column;
+                overflow: hidden; }
+  #panel-head-scroll { flex: 0 1 auto; min-height: 0; overflow-y: auto;
+                       scrollbar-width: thin;
+                       scrollbar-color: #cfd6e4 transparent; }
+  #panel-head-scroll::-webkit-scrollbar { width: 8px; }
+  #panel-head-scroll::-webkit-scrollbar-thumb { background: #cfd6e4;
+                                                border-radius: 4px; }
+  /* A flag row cut in half by the fold reads as a rendering fault, not as
+     "there is more of the form below" -- and this head clips on any short
+     window now that it carries the whole form. `more` is set from JS because
+     "am I overflowing, and am I already at the bottom" is not a CSS question,
+     and an unconditional fade would grey out the notes box on every window
+     where nothing is hidden at all. */
+  #panel-head-scroll.more {
+    -webkit-mask-image: linear-gradient(#000 calc(100% - 22px), transparent);
+            mask-image: linear-gradient(#000 calc(100% - 22px), transparent); }
+  #panel-head #transition-out { flex: 0 0 auto; }
+  /* Pinned like the read-out above it: `.flags` is a flex container and, as a
+     flex ITEM of the head's column, would otherwise shrink on a short window --
+     which is the one place these two must not go. */
+  #flags-call { flex: 0 0 auto; margin-top: 7px; }
+  #flags-call:empty { display: none; }
   #panel-head .sec:first-of-type { margin-top: 8px; }
-  #panel-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto;
+  #panel-scroll { flex: 1 1 0; min-height: 96px; overflow-y: auto;
                   padding: 10px 14px 16px; }
-  #panel-foot { flex: 0 0 auto; padding: 8px 14px 10px; background: #fff;
-                border-top: 1px solid var(--line); }
-  #panel-foot .actions { margin-top: 0; }
+  /* Pinned for the same reason `flags-call` is: these are flex ITEMS of the
+     head's column and would otherwise be the thing that shrinks on a short
+     window. Save must never be somewhere the interpreter has to go and find. */
+  #panel-actions { flex: 0 0 auto; margin-top: 2px; }
+  #panel-actions .actions { margin-top: 8px; }
 
   .pt-hdr { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
-  .pt-hdr .id { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  /* The point id is a join key nobody reads; the transition below is what the
+     whole panel exists to produce, and it was set two points SMALLER. */
+  .pt-hdr .id { font-size: 12.5px; font-weight: 700; color: var(--muted);
+                font-variant-numeric: tabular-nums; }
   .coords { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
             margin-bottom: 8px; }
   .coords a { color: var(--accent); text-decoration: none; margin-left: 6px; }
@@ -212,7 +319,7 @@ if (typeof maplibregl === 'undefined') {
     align-items: center; gap: 3px; line-height: 1.2;
   }
   .choice .sw { width: 100%; height: 4px; border-radius: 2px; }
-  .choice .k { font-size: 9.5px; color: var(--muted); font-weight: 400; }
+  .choice .k { font-size: 11px; color: var(--muted); font-weight: 400; }
   .choice:hover { background: #f8fafc; }
   .choice.on { border-color: currentColor; box-shadow: inset 0 0 0 1px currentColor; }
   .choice.on.nature     { color: var(--nature-ink);     background: #f0fdf4; }
@@ -222,14 +329,14 @@ if (typeof maplibregl === 'undefined') {
 
   #transition-out {
     margin-top: 10px; padding: 9px 11px; border-radius: 7px; text-align: center;
-    font-weight: 700; font-size: 13.5px; border: 1px solid var(--line);
+    font-weight: 700; font-size: 16px; border: 1px solid var(--line);
     background: #f8fafc; color: var(--muted);
   }
   #transition-out.change { background: var(--warnbg); border-color: var(--warnline);
                            color: var(--warn); }
   #transition-out.stable { background: var(--okbg); border-color: var(--okline);
                            color: var(--ok); }
-  #transition-out .sub { display: block; font-size: 10.5px; font-weight: 400;
+  #transition-out .sub { display: block; font-size: 11.5px; font-weight: 400;
                          margin-top: 2px; opacity: .85; }
 
   .flags { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -239,8 +346,15 @@ if (typeof maplibregl === 'undefined') {
     color: var(--muted);
   }
   .flag:hover { background: #f8fafc; }
-  .flag.on { background: var(--warnbg); border-color: var(--warnline);
-             color: var(--warn); }
+  /* Amber is reserved for flags that CAVEAT the label (unsure, cannot
+     interpret, imagery date gap, mixed cell). A flag that merely records an
+     observation -- "change seen, ends match", "flag for review" -- is selected,
+     not alarming, and gets the same accent blue as every other on-state in the
+     app. Tone comes from FLAGS, so the two cannot drift. */
+  .flag.on { background: var(--accentbg); border-color: #b2ccff;
+             color: var(--accent); }
+  .flag.on.caution { background: var(--warnbg); border-color: var(--warnline);
+                     color: var(--warn); }
 
   .years { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
   .years button { border: 1px solid var(--line); background: #fff; border-radius: 6px;
@@ -249,7 +363,7 @@ if (typeof maplibregl === 'undefined') {
                   font-variant-numeric: tabular-nums; }
   .years button.on { background: var(--accentbg); border-color: #b2ccff;
                      color: var(--accent); }
-  .note-small { color: var(--muted); font-size: 10.5px; margin-top: 5px;
+  .note-small { color: var(--muted); font-size: 11.5px; margin-top: 5px;
                 line-height: 1.4; }
 
   .conf { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
@@ -259,8 +373,12 @@ if (typeof maplibregl === 'undefined') {
   .conf button.on { background: var(--accentbg); border-color: #b2ccff;
                     color: var(--accent); }
 
+  /* 38px is two lines. It was 46 when this sat in a scroller with nothing
+     below it to push off screen; in the pinned form every pixel it takes is a
+     pixel of evidence, and `resize: vertical` is still there for the point
+     that needs a paragraph. */
   textarea#notes {
-    width: 100%; min-height: 46px; font-family: inherit; font-size: 12px;
+    width: 100%; min-height: 38px; font-family: inherit; font-size: 12px;
     padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
     resize: vertical;
   }
@@ -271,7 +389,9 @@ if (typeof maplibregl === 'undefined') {
     font-size: 13px; font-weight: 700;
   }
   #btn-save { background: var(--accent); color: #fff; }
-  #btn-save:disabled { background: #c9d4ea; cursor: default; }
+  /* White on #c9d4ea is 1.49:1, and disabled is this button's state on
+     arrival at every point -- its most-seen one. Same fill, readable ink. */
+  #btn-save:disabled { background: #c9d4ea; color: #3c4a68; cursor: default; }
   #btn-skip { flex: 0 0 84px; background: #f2f4f7; color: var(--muted); }
 
   .meta-table { width: 100%; font-size: 11.5px; border-collapse: collapse; }
@@ -299,9 +419,15 @@ if (typeof maplibregl === 'undefined') {
      and the two rules are callouts rather than another run-on paragraph. */
   details.legend { margin-top: 8px; border: 1px solid var(--line);
                    background: #f8fafc; border-radius: 7px; padding: 7px 10px; }
+  /* On the summary as well as inside the fold: the fold is closed by default,
+     and a definition nobody can find is a definition nobody reads. */
+  details.legend summary .crib, details.legend .rule a {
+    font-weight: 700; color: var(--accent); text-decoration: none; }
+  details.legend summary .crib { float: right; font-size: 11px; }
+  details.legend summary .crib:hover, details.legend .rule a:hover {
+    text-decoration: underline; }
   details.legend summary { cursor: pointer; font-size: 12px; font-weight: 700;
-                           color: var(--ink); list-style-position: outside; }
-  details.legend summary::marker { color: var(--muted); }
+                           color: var(--ink); }
   details.legend[open] summary { margin-bottom: 4px; }
   details.legend .body { font-size: 12.5px; line-height: 1.45; }
   details.legend .cls { display: grid; grid-template-columns: minmax(74px, auto) 1fr;
@@ -324,11 +450,11 @@ if (typeof maplibregl === 'undefined') {
                  background: var(--warnbg); border-radius: 7px; padding: 7px 9px; }
   details.hint summary { cursor: pointer; font-size: 11.5px; font-weight: 700;
                          color: var(--warn); }
-  details.hint .why { font-size: 10.5px; color: var(--warn); margin-top: 5px;
+  details.hint .why { font-size: 11.5px; color: var(--warn); margin-top: 5px;
                       line-height: 1.45; opacity: .9; }
   details.hint .body { margin-top: 7px; font-size: 11.5px; }
 
-  .badge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px;
            background: var(--accentbg); color: var(--accent); text-transform: uppercase;
            letter-spacing: .03em; }
   .badge.retrieval { background: #fdf2fa; color: #c11574; }
@@ -342,10 +468,16 @@ if (typeof maplibregl === 'undefined') {
     overflow-x: auto; min-height: 38px;
   }
   #strip .dot {
+    position: relative;
     width: 17px; height: 17px; border-radius: 4px; flex-shrink: 0; cursor: pointer;
-    border: 1px solid var(--line); background: #fff; font-size: 9px;
+    border: 1px solid var(--line); background: #fff; font-size: 10.5px;
     display: flex; align-items: center; justify-content: center; color: var(--muted);
   }
+  /* 17px is under the 24px minimum, and 1,250 bigger dots is a strip nobody
+     can scan. The picture keeps its size; the hit box grows into the 8px gap.
+     Absolute, so it does not become a third flex item and shove the number. */
+  #strip .dot::after { content: ''; position: absolute; top: -4px; bottom: -4px;
+                       left: -4px; right: -4px; }
   #strip .dot.done    { background: var(--ok); border-color: var(--ok); color: #fff; }
   #strip .dot.skipped { background: #d0d5dd; border-color: #d0d5dd; color: #fff; }
   #strip .dot.cur     { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -376,9 +508,18 @@ if (typeof maplibregl === 'undefined') {
   #second-banner { font-size: 11px; margin: -4px 0 8px; padding: 5px 8px;
                    border-radius: 5px; background: #fdf2fa; color: #c11574;
                    border: 1px solid #fcceee; line-height: 1.45; }
+  /* One disclosure idiom. Every <details> in the app now carries the same
+     right-hand caret as the card headers do, instead of the UA triangle on the
+     left, so learning one teaches the rest. */
+  details > summary { list-style: none; display: flex; align-items: center;
+                      gap: 6px; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::after { content: '\25B8'; margin-left: auto;
+    color: var(--muted); font-size: 11px; font-weight: 400; flex: 0 0 auto; }
+  details[open] > summary::after { content: '\25BE'; }
   details.setup { margin-top: 6px; border-top: 1px solid var(--line);
                   padding-top: 5px; }
-  details.setup summary { cursor: pointer; font-size: 10.5px;
+  details.setup summary { cursor: pointer; font-size: 11.5px;
                           color: var(--muted); font-weight: 700; }
 
   /* ── Earth Engine presets and legends ───────────────────────────────────
@@ -386,16 +527,16 @@ if (typeof maplibregl === 'undefined') {
      its end year answers a question it cannot see the end of. Both are
      structural here rather than optional. */
   .ee-group { margin-top: 6px; }
-  .ee-ask { font-size: 10px; font-weight: 700; color: var(--muted);
+  .ee-ask { font-size: 11px; font-weight: 700; color: var(--muted);
             text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
   button.ee-layer { display: block; width: 100%; text-align: left;
                     margin-bottom: 3px; font-weight: 600; font-size: 11.5px; }
-  button.ee-layer .yr { color: var(--muted); font-weight: 400; font-size: 10px; }
+  button.ee-layer .yr { color: var(--muted); font-weight: 400; font-size: 11px; }
   button.ee-layer.on { background: var(--accentbg); border-color: #b2ccff;
                        color: var(--accent); font-weight: 700; }
-  .ee-prov { font-size: 10.5px; color: var(--muted); line-height: 1.45;
+  .ee-prov { font-size: 11.5px; color: var(--muted); line-height: 1.45;
              margin-bottom: 4px; }
-  .ee-legend { display: flex; flex-wrap: wrap; gap: 3px 9px; font-size: 10.5px;
+  .ee-legend { display: flex; flex-wrap: wrap; gap: 3px 9px; font-size: 11.5px;
                color: var(--ink); align-items: center; }
   .ee-legend .sw-row { display: flex; align-items: center; gap: 4px; }
   .ee-legend .sw-row i { width: 10px; height: 10px; border-radius: 2px;
@@ -403,16 +544,42 @@ if (typeof maplibregl === 'undefined') {
   .ee-legend .sw-ramp { display: block; width: 100%; height: 8px;
                         border-radius: 3px; border: 1px solid rgba(0,0,0,.15); }
   .ee-legend .sw-ends { width: 100%; color: var(--muted); }
-  .ee-stale { margin-top: 5px; font-size: 10.5px; color: var(--warn);
+  .ee-stale { margin-top: 5px; font-size: 11.5px; color: var(--warn);
               line-height: 1.4; }
-  #ee-layer-note { margin-top: 5px; font-size: 10.5px; color: var(--muted);
+  #ee-inspect { margin-bottom: 9px; padding-bottom: 8px;
+                border-bottom: 1px solid var(--line); }
+  #insp-out { margin-top: 6px; font-size: 11.5px; }
+  #insp-out .insp-head { display: flex; gap: 6px; align-items: baseline;
+                         color: var(--muted); font-variant-numeric: tabular-nums; }
+  #insp-out .insp-head a { color: var(--accent); text-decoration: none;
+                           margin-left: auto; }
+  #insp-out .insp-head a:hover { text-decoration: underline; }
+  #insp-out .insp-season { color: var(--muted); margin-top: 2px; }
+  #insp-out .insp-none, #insp-out .insp-wait { color: var(--muted); margin-top: 5px; }
+  table.insp { width: 100%; border-collapse: collapse; margin-top: 5px;
+               font-variant-numeric: tabular-nums; }
+  table.insp th, table.insp td { padding: 2px 0 2px 4px; text-align: right; }
+  table.insp th:first-child, table.insp td:first-child { text-align: left;
+                                                         padding-left: 0; }
+  table.insp thead th { font-size: 10px; text-transform: uppercase;
+                        letter-spacing: .04em; color: var(--muted);
+                        border-bottom: 1px solid var(--line); }
+  /* The indices are derived from the six rows above them, so they are ruled off
+     rather than listed as if they were a seventh measurement. */
+  table.insp tr.idx td { border-top: 1px solid var(--line); font-weight: 700; }
+  table.insp td.na { color: var(--muted); }
+  #insp-out .insp-ov { margin-top: 7px; padding-top: 5px;
+                       border-top: 1px solid var(--line); }
+  #insp-out .insp-ov .ovl { color: var(--ink); font-weight: 700; }
+  #insp-out .insp-ov .ovv { font-variant-numeric: tabular-nums; }
+  #ee-layer-note { margin-top: 5px; font-size: 11.5px; color: var(--muted);
                    line-height: 1.4; }
 
   /* ── evidence ───────────────────────────────────────────────────────────
      Open by default and visually apart from the collapsed model hint. The two
      are not the same kind of thing: these fail independently of the model
      (§P), the posterior does not. */
-  .ev-why { font-size: 10.5px; color: var(--muted); line-height: 1.45;
+  .ev-why { font-size: 11.5px; color: var(--muted); line-height: 1.45;
             margin: -2px 0 7px; }
   /* Four labelled blocks in the order an interpreter works in, and every value
      rendered as the kind of thing it is: a class with its dataset's own
@@ -421,7 +588,7 @@ if (typeof maplibregl === 'undefined') {
      what each row meant. */
   .ev-group { margin-top: 9px; }
   .ev-group:first-child { margin-top: 3px; }
-  .ev-ghdr { font-size: 9.5px; font-weight: 700; color: var(--muted);
+  .ev-ghdr { font-size: 11px; font-weight: 700; color: var(--muted);
     text-transform: uppercase; letter-spacing: .06em; display: flex;
     align-items: center; gap: 7px; margin-bottom: 1px; }
   .ev-ghdr::after { content: ''; flex: 1 1 auto; height: 1px;
@@ -431,7 +598,7 @@ if (typeof maplibregl === 'undefined') {
     border-bottom: 1px solid #f4f6f8; }
   .ev-row:last-child { border-bottom: none; }
   .ev-name { font-size: 11.5px; color: var(--muted); line-height: 1.25; }
-  .ev-when { display: block; font-size: 9px; font-weight: 700; opacity: .8;
+  .ev-when { display: block; font-size: 10.5px; font-weight: 700; opacity: .8;
              font-variant-numeric: tabular-nums; }
   .ev-when.stale { color: var(--warn); opacity: 1; }
   .ev-val { font-size: 11.5px; line-height: 1.3; }
@@ -448,12 +615,14 @@ if (typeof maplibregl === 'undefined') {
   .ev-num { font-variant-numeric: tabular-nums; margin-left: 3px; }
   /* No red-for-up / green-for-down: more built and more tree are both "up" and
      colouring the sign would say one of them is bad. */
-  .ev-delta { margin-left: 6px; font-size: 10px; font-weight: 700;
+  .ev-delta { margin-left: 6px; font-size: 11px; font-weight: 700;
               font-variant-numeric: tabular-nums; color: var(--ink); }
   .ev-delta.flat { color: var(--muted); font-weight: 400; }
   .ev-seq { display: inline-flex; gap: 1px; vertical-align: middle; }
-  .ev-seq i { width: 9px; height: 13px; cursor: pointer;
+  .ev-seq i { position: relative; width: 13px; height: 18px; cursor: pointer;
               box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
+  .ev-seq i::after { content: ''; position: absolute; top: -3px; bottom: -3px;
+                     left: -3px; right: -3px; }
   .ev-seq i:first-child { border-radius: 2px 0 0 2px; }
   .ev-seq i:last-child  { border-radius: 0 2px 2px 0; }
   .ev-seq-now { margin-left: 6px; }
@@ -464,7 +633,7 @@ if (typeof maplibregl === 'undefined') {
                 text-transform: uppercase; letter-spacing: .04em; }
   .ev-series { margin-left: auto; display: flex; gap: 3px; }
   .ev-series button { border: 1px solid var(--line); background: #fff;
-    border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 10.5px;
+    border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 11.5px;
     font-weight: 700; color: var(--muted); }
   .ev-series button.on { background: var(--accentbg); border-color: #b2ccff;
                          color: var(--accent); }
@@ -475,29 +644,29 @@ if (typeof maplibregl === 'undefined') {
   .ev-plot { position: relative; margin-top: 4px; }
   .ev-plot svg { width: 100%; height: auto; display: block; }
   .ev-plot .grid { stroke: var(--line); stroke-width: 1; }
-  .ev-plot .tick { font-size: 8px; fill: var(--muted); }
-  .ev-plot .band-lbl { font-size: 8px; fill: var(--muted); text-anchor: middle; }
+  .ev-plot .tick { font-size: 9.5px; fill: var(--muted); }
+  .ev-plot .band-lbl { font-size: 9.5px; fill: var(--muted); text-anchor: middle; }
   .ev-plot .ev-line { fill: none; stroke: var(--accent); stroke-width: 1.8; }
   .ev-plot .ev-line.faint { stroke-width: 1.2; opacity: .3; }
   .ev-plot .dense-line { fill: none; stroke: #98a2b3; stroke-width: .7;
                          opacity: .55; }
   .ev-plot .dense-dot { fill: #475467; opacity: .6; }
-  .dense-cap { font-size: 9.5px; color: var(--muted); line-height: 1.35;
+  .dense-cap { font-size: 11px; color: var(--muted); line-height: 1.35;
                margin-top: 2px; }
   .ev-plot .ev-dot { fill: var(--accent); stroke: #fff; stroke-width: 1;
                      cursor: pointer; }
   .ev-plot .ev-dot.sel { stroke: var(--ink); stroke-width: 2; r: 6; }
   .ev-plot .ev-target { stroke: #98a2b3; stroke-width: 1; stroke-dasharray: 3 2; }
   .ev-plot .ev-cut { stroke: var(--nature); stroke-width: 1; stroke-dasharray: 2 3; }
-  .ev-plot .ev-cut-lbl { font-size: 7.5px; fill: var(--nature); }
+  .ev-plot .ev-cut-lbl { font-size: 9px; fill: var(--nature); }
   .ev-plot .spec-line { fill: none; stroke-width: 1.5; opacity: .9; }
   .ev-plot .spec-line.dim { opacity: .25; }
   .ev-plot .spec-line.sel { stroke-width: 2.6; opacity: 1; }
   .ev-tip { position: absolute; top: 0; background: rgba(17,17,17,.86);
-            color: #fff; font-size: 10.5px; padding: 3px 7px; border-radius: 5px;
+            color: #fff; font-size: 11.5px; padding: 3px 7px; border-radius: 5px;
             pointer-events: none; white-space: nowrap; }
   .spec-legend { display: flex; flex-wrap: wrap; gap: 3px 7px; margin-top: 4px; }
-  .spec-legend label { font-size: 10px; color: var(--ink); cursor: pointer;
+  .spec-legend label { font-size: 11px; color: var(--ink); cursor: pointer;
                        display: flex; align-items: center; gap: 3px; }
   .spec-legend label.dim { opacity: .35; }
   .spec-legend .sl-sw { width: 9px; height: 9px; border-radius: 2px; }
@@ -522,7 +691,7 @@ if (typeof maplibregl === 'undefined') {
   .chip-legend { display: flex; align-items: center; gap: 5px; }
   .chip-legend .ramp { display: block; width: 54px; height: 8px;
                        border-radius: 2px; border: 1px solid var(--line); }
-  .chip-legend .ends { color: var(--muted); font-size: 10px;
+  .chip-legend .ends { color: var(--muted); font-size: 11px;
                        font-variant-numeric: tabular-nums; }
   #ev-strip { display: flex; gap: 6px; overflow-x: auto; pointer-events: auto;
               padding-bottom: 2px; }
@@ -551,7 +720,7 @@ if (typeof maplibregl === 'undefined') {
                         to   { background-position: -130% 0; } }
   #ev-strip .chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
   #ev-strip .chip .yr { position: absolute; left: 3px; top: 2px; z-index: 2;
-    background: rgba(17,17,17,.72); color: #fff; font-size: 10px; font-weight: 700;
+    background: rgba(17,17,17,.72); color: #fff; font-size: 11px; font-weight: 700;
     padding: 0 4px; border-radius: 3px; }
   #ev-strip .chip .ld { color: #fff; font-size: 15px; opacity: .8; }
   #ev-strip .chip:not(.tinted) .ld::after { content: '…'; }
@@ -560,17 +729,24 @@ if (typeof maplibregl === 'undefined') {
   #ev-strip .chip.nodata { background: repeating-linear-gradient(45deg,
       #2b303b, #2b303b 5px, #343a46 5px, #343a46 10px); }
   #ev-strip .chip.nodata::after { content: 'no clear'; color: #9aa4b2;
-    font-size: 10px; font-weight: 700; text-align: center; line-height: 1.2; }
+    font-size: 11px; font-weight: 700; text-align: center; line-height: 1.2; }
   #ev-strip .chip .chip-zoom, #ev-strip .chip .chip-retry {
     position: absolute; right: 3px; bottom: 3px; z-index: 2; border: none;
     background: rgba(17,17,17,.72); color: #fff; border-radius: 4px;
-    padding: 1px 5px; cursor: pointer; font-size: 11px; }
+    min-width: 24px; min-height: 22px;
+    padding: 2px 6px; cursor: pointer; font-size: 12px; }
   #ev-strip-note:empty { display: none; }
   #ev-strip-note .chip-off { pointer-events: auto;
     background: rgba(255,255,255,.94);
     border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
     font-size: 11px; color: var(--muted); line-height: 1.45; max-width: 560px;
     margin-top: 5px; }
+  /* Same box, different claim. `chip-off` reports something that is not
+     working; `calm` reports something that is working as designed and looks
+     identical on screen -- a flat strip, an index waiting on Earth Engine.
+     Given the same grey they were read as the same message. */
+  #ev-strip-note .chip-off.calm { border-left: 3px solid var(--accent);
+                                  color: var(--ink); }
   #ev-strip-note .chip-off button { margin-left: 6px; border: 1px solid var(--line);
     background: #f7f9ff; color: var(--accent); border-radius: 5px;
     padding: 2px 8px; cursor: pointer; font-weight: 700; font-size: 11px; }
@@ -579,18 +755,35 @@ if (typeof maplibregl === 'undefined') {
      It owns the arrow keys while it is up; point navigation is on the same two
      keys and stepping to the next point while looking at an enlarged chip is
      not what anybody meant. */
-  #lightbox { position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.84);
+  #lightbox { position: fixed; top: 0; bottom: 0; left: 0;
+    right: var(--panel-w, 340px); z-index: 120; background: rgba(0,0,0,.84);
     display: none; align-items: center; justify-content: center;
     flex-direction: column; gap: 12px; }
+  /* Narrow windows have no room for both; there the chip takes the lot and
+     the linked readings are a close away. */
+  @media (max-width: 900px) { #lightbox { right: 0; } }
   #lightbox.on { display: flex; }
-  #lightbox img { max-width: 86vw; max-height: 70vh; border-radius: 6px;
+  /* While the lightbox is up the panel beside it has one job: show the two
+     readings the year-stepping drives. The standing explanations are ~150px of
+     prose that is read once, on the first point of a batch, and they are what
+     pushed the index chart below the fold. */
+  body.lb-open #sec-evidence .ev-why,
+  body.lb-open #sec-evidence .dense-cap { display: none; }
+  /* The same argument, now that the head is the whole form: while a year is
+     enlarged the interpreter is reading evidence, not filling anything in, and
+     ~570 px of pinned form is the other thing that pushes the spectral profile
+     below the fold. The form is not hidden -- it keeps its own scroller, and
+     the read-out, the call flags and the buttons stay pinned under it, because
+     they are what an enlarged year is being read *for*. */
+  body.lb-open #panel-head { max-height: 34%; }
+  #lightbox img { max-width: 92%; max-height: 64vh; border-radius: 6px;
                   background: #111; }
   /* The baked slice stands in for the img until the live composite lands, so
      it is sized like one. Chips are square. `pixelated` is deliberate: a
      176 px cell blown up to 70vh is being magnified 4x and smoothing it makes
      it read as a soft photograph rather than as the placeholder it is. */
-  #lb-slice { width: min(86vw, 70vh); height: min(86vw, 70vh);
-    border-radius: 6px; background: #111 no-repeat;
+  #lb-slice { width: min(92%, 64vh); height: min(92%, 64vh);
+    aspect-ratio: 1; border-radius: 6px; background: #111 no-repeat;
     image-rendering: pixelated; }
   #lightbox .lb-cap { color: #fff; font-size: 14px; font-weight: 700; }
   #lightbox .lb-nav { display: flex; gap: 10px; }
@@ -614,7 +807,20 @@ if (typeof maplibregl === 'undefined') {
   #loading .sub li { margin-bottom: 7px; }
   #loading button.go { padding: 8px 18px; border-radius: 7px; border: none;
     background: var(--accent); color: #fff; cursor: pointer; font-size: 13px;
-    font-weight: 700; margin-top: 14px; }
+    font-weight: 700; margin-top: 14px; font-family: inherit; }
+  #loading button.go.secondary { background: #fff; color: var(--ink);
+    border: 1px solid var(--line); font-weight: 600; }
+  #loading button.go.secondary:hover { background: #f8fafc; }
+  #loading .go-row { display: flex; flex-wrap: wrap; gap: 8px;
+                     justify-content: center; margin-top: 14px; }
+  #loading .go-row button.go { margin-top: 0; }
+  /* The list rows in the deferred / pick-a-batch dialogs. */
+  #loading button.pick { display: block; width: 100%; text-align: left;
+    margin: 3px 0; padding: 7px 10px; border-radius: 6px; font-family: inherit;
+    border: 1px solid var(--line); background: #fff; cursor: pointer;
+    font-size: 12.5px; color: var(--ink); }
+  #loading button.pick:hover { background: #f8fafc; }
+  #loading button.pick.dim { opacity: .55; }
   #loading input.name { font-size: 14px; padding: 7px 10px; width: 220px;
     border: 1px solid var(--line); border-radius: 7px; margin-top: 10px; }
   #drop-hint {
@@ -625,13 +831,13 @@ if (typeof maplibregl === 'undefined') {
   body.dragging #drop-hint { display: flex; }
 
   kbd { background: #f2f4f7; border: 1px solid var(--line); border-bottom-width: 2px;
-        border-radius: 4px; padding: 0 4px; font-size: 10.5px; font-family: inherit;
+        border-radius: 4px; padding: 0 4px; font-size: 11.5px; font-family: inherit;
         color: var(--muted); }
 </style>
 </head>
 <body>
 
-<div id="loading">
+<div id="loading" role="dialog" aria-modal="true" aria-labelledby="loading-msg">
   <div class="msg" id="loading-msg">Loading…</div>
   <div class="sub" id="loading-sub"></div>
 </div>
@@ -642,31 +848,38 @@ if (typeof maplibregl === 'undefined') {
   <span class="sub" id="batch-line">no batch loaded</span>
   <span class="spacer"></span>
   <span class="sub">you</span>
-  <select id="who" title="Every row is keyed by a stable expert id, not by a typed name. Two people reading the same point is the campaign's only measurement of its own label noise, so who you are is part of the key."></select>
-  <input type="text" id="who-other" placeholder="your name" autocomplete="off" style="display:none">
+  <select id="who" aria-label="Who is labelling" title="Every row is keyed by a stable expert id, not by a typed name. Two people reading the same point is the campaign's only measurement of its own label noise, so who you are is part of the key."></select>
+  <input type="text" id="who-other" placeholder="your name" autocomplete="off"
+         aria-label="Your name" style="display:none">
   <button id="who-switch" style="display:none;border:1px solid var(--line);background:#fff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px;font-weight:700;color:var(--muted)" title="This batch is locked to you because you have already saved a row in it. Switching opens a separate workspace.">switch</button>
-  <button id="btn-help" title="How this works" style="border:1px solid var(--line);background:#fff;border-radius:999px;width:22px;height:22px;cursor:pointer;font-weight:700;color:var(--muted);font-size:12px;line-height:1">?</button>
-  <span class="pill" id="pill-progress">0 / 0</span>
-  <span class="pill" id="pill-sync" title="Click for the last sync error and the exec URL">connecting…</span>
+  <button id="btn-help" aria-label="How this works" title="How this works" style="border:1px solid var(--line);background:#fff;border-radius:999px;width:24px;height:24px;cursor:pointer;font-weight:700;color:var(--muted);font-size:12px;line-height:1">?</button>
+  <span class="pill" id="pill-progress" aria-live="polite">0 / 0</span>
+  <!-- A status AND a button, and it read as neither: same chrome as the static
+       pill beside it, with the "click for the last error" affordance in a
+       `title`. It is the only channel that says work is being held locally. -->
+  <button type="button" class="pill" id="pill-sync" aria-live="polite"
+    title="Click for the last sync error and the exec URL">connecting…</button>
 </header>
-<div id="progress-wrap"><div id="progress"></div></div>
+<div id="progress-wrap" role="progressbar" aria-label="Batch progress"
+     aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress"></div></div>
 
 <div id="layout">
   <div id="map">
     <div id="ctrl-right">
-      <button id="btn-cards" title="Collapse every panel and get the imagery clear. The interpreter spends most of the batch not needing any of this.">⌃ hide panels</button>
+      <button id="btn-cards" title="Fold every panel away and see the imagery on its own. Most of a batch is spent not needing any of these controls.">⌃ hide panels</button>
 
       <div class="card" id="c-batch">
-        <div class="hdr" data-toggle="b-batch">📋 Batch <span class="caret">▾</span></div>
+        <button type="button" class="hdr" data-toggle="b-batch" aria-expanded="true"
+             aria-controls="b-batch">📋 Batch <span class="caret" aria-hidden="true">▾</span></button>
         <div id="b-batch">
           <div class="row">
-            <select id="batch-select"><option>—</option></select>
+            <select id="batch-select" aria-label="Batch"><option>—</option></select>
             <button id="batch-load" title="Load the selected batch">open</button>
           </div>
-          <div class="row" id="queue-row">
-            <button id="q-mine" class="q on" style="flex:1"
+          <div class="row" id="queue-row" role="group" aria-label="Queue">
+            <button id="q-mine" class="q on" style="flex:1" aria-pressed="true"
               title="The points this batch assigns to you.">My points (0)</button>
-            <button id="q-second" class="q" style="flex:1"
+            <button id="q-second" class="q" style="flex:1" aria-pressed="false"
               title="The deliberate overlap: points somebody else has already called. Their call is hidden — that is what makes the agreement number mean anything.">Second readings (0)</button>
           </div>
           <div class="note" id="queue-note" style="margin-top:4px"></div>
@@ -676,25 +889,33 @@ if (typeof maplibregl === 'undefined') {
           </div>
           <details class="setup">
             <summary>⚙ batch setup</summary>
-            <label title="Only used by a batch cut without assignments. When the batch file names a primary_expert and required_readers — which build_label_batches.py does by default — the queues above are the authority and this does nothing.">
+            <label title="Only does anything for an old batch that was made without a list of who labels what. Normally the batch file itself says who gets which points, and the two buttons above are what decide.">
               <input type="checkbox" id="skip-others" checked> skip points others have done</label>
-            <div class="note">Debug override. Overlap is a property of the batch
-              file, not of a checkbox somebody has to remember.</div>
+            <div class="note">A fallback for old batches. Who reads which
+              points is set when the batch is made, so nobody has to remember a
+              checkbox.</div>
           </details>
           <div class="note" id="batch-note"
-            title="The replay lab measured the same 2,000 acquisitions at -0.003 change-F1 delivered as one batch and +0.031 delivered as twenty. Small and sequential is the measured setting, not a packaging convenience.">
-            Finish one, sync, take the next. <span style="cursor:help">ⓘ</span>
+            title="We tested this: the same 2,000 points helped the model far more when handed over in twenty small batches than in one big one. Small batches, returned as you finish them, is a measured decision rather than a packaging habit.">
+            Finish one, sync, take the next <span style="cursor:help">ⓘ</span>
+            — or drop a <code>.json</code>/<code>.csv</code>/<code>.geojson</code>
+            file on this window.
           </div>
         </div>
       </div>
 
       <div class="card" id="c-wayback">
-        <div class="hdr" data-toggle="b-wayback">🕑 Esri Wayback imagery <span class="caret">▾</span></div>
+        <button type="button" class="hdr" data-toggle="b-wayback" aria-expanded="true"
+             aria-controls="b-wayback">🕑 Esri Wayback imagery <span class="caret" aria-hidden="true">▾</span></button>
         <div id="b-wayback">
-          <label><input type="checkbox" id="wb-on"> archived captures on</label>
+          <!-- This is the master switch for the app's own instrument, and it
+               was an unremarkable checkbox above six dead controls. Said as
+               what it is, and the disabled state below now says why. -->
+          <label class="master"><input type="checkbox" id="wb-on"><span>
+            <b>Turn on the archive</b> — needed to compare two dates</span></label>
           <div class="row">
             <button id="wb-prev" title="Older capture" disabled>‹</button>
-            <select id="wb-select" disabled><option>loading…</option></select>
+            <select id="wb-select" aria-label="Capture date (left)" disabled><option>loading…</option></select>
             <button id="wb-next" title="Newer capture" disabled>›</button>
           </div>
           <label title="Filter the list to releases whose imagery actually changed at this point — releases mostly re-serve older tiles">
@@ -703,7 +924,7 @@ if (typeof maplibregl === 'undefined') {
             <input type="checkbox" id="wb-compare" disabled> ⇆ compare two dates (swipe)</label>
           <div class="row" id="wb-row-b" style="display:none">
             <button id="wb-b-prev" title="Older capture (right side)">‹</button>
-            <select id="wb-b-select"></select>
+            <select id="wb-b-select" aria-label="Capture date (right)"></select>
             <button id="wb-b-next" title="Newer capture (right side)">›</button>
           </div>
           <div class="row">
@@ -712,8 +933,9 @@ if (typeof maplibregl === 'undefined') {
               snap to 2018 ⇆ 2024</button>
           </div>
           <div class="row">
-            <span style="color:var(--muted)">opacity</span>
-            <input type="range" id="wb-opacity" min="0" max="100" value="100" disabled style="flex:1">
+            <span style="color:var(--muted)" id="wb-op-lab">opacity</span>
+            <input type="range" id="wb-opacity" min="0" max="100" value="100" disabled
+                   aria-labelledby="wb-op-lab" style="flex:1">
           </div>
           <div class="note" id="wb-note"
             title="List dates are release dates, not acquisition dates: a release mostly re-serves older tiles, so the 2018 release may be showing 2015 imagery at your point. The true local capture date is looked up per point and shown below.">
@@ -721,15 +943,16 @@ if (typeof maplibregl === 'undefined') {
             <span style="cursor:help">ⓘ</span></div>
           <div class="note" id="wb-meta" style="display:none"></div>
           <div class="note" id="wb-click" style="display:none"
-            title="Click-to-inspect is a separate readout on purpose: imagery_a and imagery_b on the saved row always describe the point, never wherever you last clicked."></div>
+            title="Kept separate on purpose: the capture dates saved with your label always describe the point itself, never wherever you last clicked."></div>
         </div>
       </div>
 
       <div class="card" id="c-layers">
-        <div class="hdr" data-toggle="b-layers">🗺 Basemap &amp; overlays <span class="caret">▾</span></div>
+        <button type="button" class="hdr" data-toggle="b-layers" aria-expanded="true"
+             aria-controls="b-layers">🗺 Basemap &amp; overlays <span class="caret" aria-hidden="true">▾</span></button>
         <div id="b-layers">
           <div class="row">
-            <select id="base-select">
+            <select id="base-select" aria-label="Basemap">
               <option value="esri">Esri World Imagery</option>
               <option value="esri-labels">Esri imagery + place labels</option>
               <option value="osm">OpenStreetMap</option>
@@ -744,27 +967,46 @@ if (typeof maplibregl === 'undefined') {
             other points in this batch</label>
           <div class="row">
             <button id="btn-fit-cell" style="flex:1"
-              title="The dashed 5 km square is off-screen at the working zoom. This pulls back to show it, then Enter or the next point returns you to the labelling scale.">⤢ fit the 5 km cell</button>
+              title="The dashed 5 km square is off-screen at the working zoom. This pulls back to show it, then Enter or the next point returns you to the labelling scale.">⤡ zoom out to the 5 km cell</button>
           </div>
         </div>
       </div>
 
-      <div class="card" id="c-ee">
-        <div class="hdr" data-toggle="b-ee">🌍 Earth Engine <span class="caret">▾</span></div>
+      <div class="card aux" id="c-ee">
+        <button type="button" class="hdr" data-toggle="b-ee" aria-expanded="true"
+             aria-controls="b-ee">🌍 Earth Engine <span class="caret" aria-hidden="true">▾</span></button>
         <div id="b-ee">
           <div class="row"><button id="ee-signin" style="flex:1">Connect Earth Engine</button></div>
           <div id="ee-layers" style="display:none">
+            <!-- The pixel inspector. Inside #ee-layers because it reads Earth
+                 Engine and there is nothing honest to show before it connects,
+                 and FIRST inside it because it is the one interactive thing in
+                 this card: below the ~20 layer buttons, the opacity slider and
+                 the legend, its read-out lands off the bottom of the card. -->
+            <div id="ee-inspect">
+              <label class="master"><input type="checkbox" id="insp-on"><span>
+                <b>🔎 Inspect pixel values</b> — then click anywhere on the map</span></label>
+              <div class="note" id="insp-note">Sentinel-2 values at whatever
+                pixel you click, for 2018 and 2024 — from the same
+                growing-season composite the yearly pictures and the spectral
+                profile are made from — plus whichever map layer is switched on.
+                <b>At the click, not at the point</b>: nothing here is saved with
+                your label.</div>
+              <div id="insp-out" style="display:none"></div>
+            </div>
             <div id="ee-presets"></div>
             <div class="row">
-              <span style="color:var(--muted)">opacity</span>
-              <input type="range" id="ee-opacity" min="0" max="100" value="70" style="flex:1">
+              <span style="color:var(--muted)" id="ee-op-lab">opacity</span>
+              <input type="range" id="ee-opacity" min="0" max="100" value="70"
+                     aria-labelledby="ee-op-lab" style="flex:1">
             </div>
             <div id="ee-legend" style="display:none"></div>
             <div id="ee-layer-note" style="display:none"></div>
           </div>
-          <div class="note" id="ee-note">Optional. The app is fully usable without
-            it — these are auxiliary priors, not the imagery you label from,
-            and the chips are the only thing that stops working without it.</div>
+          <div class="note" id="ee-note">Optional. Everything you need to make a
+            call works without it. These extra map layers are second opinions,
+            not the imagery you label from — the only thing that stops working
+            without Earth Engine is the yearly picture strip.</div>
           <details id="ee-setup-wrap">
             <summary>⚙ deployment setup</summary>
             <div class="note" style="margin-top:4px">Both of these are already
@@ -791,8 +1033,9 @@ if (typeof maplibregl === 'undefined') {
         </div>
       </div>
 
-      <div class="card" id="c-keys">
-        <div class="hdr" data-toggle="b-keys">⌨ Shortcuts <span class="caret">▾</span></div>
+      <div class="card aux" id="c-keys">
+        <button type="button" class="hdr" data-toggle="b-keys" aria-expanded="true"
+             aria-controls="b-keys">⌨ Shortcuts <span class="caret" aria-hidden="true">▾</span></button>
         <div id="b-keys" style="display:none">
           <div class="note" style="margin-top:0">
             <kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 2018 = Nature / Cropland / Artificial<br>
@@ -816,17 +1059,26 @@ if (typeof maplibregl === 'undefined') {
     </div>
   </div>
 
-  <!-- Three bands, and the split is the point: the CALL never scrolls away.
-       Everything below the transition read-out is evidence, and reading
-       evidence means scrolling — which used to take the two date pickers and
-       the answer they produce off the top of the panel, so the interpreter
-       scrolled back up to check what they had picked. Head and foot are flex
-       children of #panel with the scroller between them, not `position:
-       sticky`: sticky inside a scroller still lets a tall head push the
-       evidence out of view on a short window. -->
+  <!-- Two bands, and the split is the point: the WHOLE CALL is the head and
+       never scrolls away. The two dates, the transition it produces, both flag
+       groups, confidence, the notes and the buttons that end the point are one
+       form and are pinned together; everything below is evidence, and reading
+       evidence means scrolling. It used to take the date pickers and the answer
+       they produce off the top of the panel, so the interpreter scrolled back
+       up to check what they had picked — and the imagery flags, confidence,
+       notes and Save were the other half of the same complaint, sitting past
+       the bottom of an evidence block that is now nine years long.
+
+       The head is a flex child of #panel with the scroller after it, not
+       `position: sticky`: sticky inside a scroller still lets a tall head push
+       the evidence out of view on a short window. `#panel-head-scroll` is the
+       head's own overflow, so a laptop window shortens the form rather than
+       deleting the evidence; `transition-out`, `flags-call` and the buttons sit
+       below it and are pinned even then. -->
   <div id="panel">
     <div id="panel-grip"></div>
     <div id="panel-head">
+      <div id="panel-head-scroll">
         <div class="pt-hdr">
           <span class="id" id="pt-id">—</span>
           <span class="badge" id="pt-channel" style="display:none"></span>
@@ -839,21 +1091,66 @@ if (typeof maplibregl === 'undefined') {
         <div id="cal-feedback" style="display:none"></div>
 
         <div class="sec">
-          <div class="lab">Land cover in 2018 <span class="kbd-hint"><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></div>
+          <div class="lab" role="heading" aria-level="2">Land cover in 2018 <span class="kbd-hint"><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></div>
           <div class="choices" id="ch-2018"></div>
         </div>
 
         <div class="sec">
-          <div class="lab">Land cover in 2024 <span class="kbd-hint"><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd></span></div>
+          <div class="lab" role="heading" aria-level="2">Land cover in 2024 <span class="kbd-hint"><kbd>Z</kbd><kbd>X</kbd><kbd>C</kbd></span></div>
           <div class="choices" id="ch-2024"></div>
         </div>
 
-        <div id="transition-out">pick both dates</div>
+        <div class="sec">
+          <div class="lab" role="heading" aria-level="2">What the imagery was like</div>
+          <div class="flags" id="flags"></div>
+        </div>
+
+        <div class="sec" id="sec-uninterp" style="display:none">
+          <div class="lab" role="heading" aria-level="2">Why can it not be interpreted?</div>
+          <div class="flags" id="uninterp-reasons"></div>
+          <input type="text" id="uninterp-other" aria-label="Say what stopped you"
+                 placeholder="say what stopped you"
+                 style="display:none;width:100%;margin-top:6px;font-size:12px;padding:5px 7px;border:1px solid var(--line);border-radius:6px">
+          <div class="note-small">Required. These points are dropped from the
+            data the model learns from, so the only thing they can still tell us
+            is <i>why</i> — which is what says whether the next round needs
+            better imagery or different places.</div>
+        </div>
+
+        <div class="sec" id="sec-conf">
+          <div class="lab" role="heading" aria-level="2">Confidence <span class="kbd-hint"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div>
+          <div class="conf" id="conf"></div>
+        </div>
+
+        <div class="sec">
+          <div class="lab" role="heading" aria-level="2">Notes</div>
+          <textarea id="notes" aria-label="Notes for later review" placeholder="notes for later review / adjudication — what you saw, which boundary was in doubt, what would settle it"></textarea>
+        </div>
+
+      </div>
+        <div id="transition-out" role="status" aria-live="polite" aria-atomic="true">pick both dates</div>
+        <!-- Below the head's own scroller, so these two stay on screen even
+             when the form above them has to scroll: `unsure` and `flag for
+             review` qualify the answer the transition read-out just stated,
+             and are read together with it. -->
+        <div class="flags" id="flags-call" role="group"
+             aria-label="How sure is this call"></div>
+        <!-- The button that ends the point is pinned to the form that produced
+             it, not to the foot of the evidence. -->
+        <div id="panel-actions">
+          <div class="actions">
+            <button id="btn-save" disabled>Save &amp; next ⏎</button>
+            <button id="btn-skip" title="Come back to this one. Whatever is in the form is kept as a draft and restored when you return, and the batch is not complete while anything is deferred.">Defer</button>
+          </div>
+          <div id="toast" role="status" aria-live="polite" style="display:none"></div>
+        </div>
     </div>
     <div id="panel-scroll">
       <div id="pt-body">
         <details class="legend">
-          <summary>What counts as what</summary>
+          <summary>What counts as what<a class="crib" id="legend-crib"
+            target="_blank" rel="noopener"
+            title="The campaign's full class definitions (LUCAS typology)">full definitions ↗</a></summary>
           <div class="body" id="legend-body"></div>
         </details>
 
@@ -873,114 +1170,82 @@ if (typeof maplibregl === 'undefined') {
              answer and the interpreter spends their attention agreeing. They
              are still here, one click away, at the foot. -->
         <div class="sec" id="sec-evidence" style="display:none">
-          <div class="lab">Evidence
+          <div class="lab" role="heading" aria-level="2">Evidence
             <span class="kbd-hint" id="ev-version"></span></div>
-          <div class="ev-why">Independent of the model. The two readings below
-            are this point measured at 10 m, which is the resolution the labels
-            are being collected for; the existing land cover maps are at the
-            foot, because they are other people's models and they fail in their
-            own ways — which is the only reason they are worth a look.</div>
+          <div class="ev-why">None of this comes from the model you are
+            correcting. The two readings below are measurements of this point
+            from the satellite at 10 m — the scale the labels are for. Existing
+            land cover maps are further down, because they are other people’s
+            models: useful because they go wrong in different ways, misleading
+            if you read them before making your own call.</div>
 
           <div class="ev-sub">
             <span class="ev-sub-lab">Spectral profile</span>
           </div>
           <div id="ev-spectral" class="ev-plot"></div>
           <div id="ev-spec-legend" class="spec-legend"></div>
-          <div class="ev-why">Median reflectance against wavelength, one line
-            per year. A cropped field and rough grazing look the same in a 10 m
-            RGB chip and separate in SWIR. This boundary is the one the ledger
-            says caps change-F1.</div>
+          <div class="ev-why">How much light this point reflects at each
+            wavelength, one line per year. A cropped field and rough grazing can
+            look identical in a colour image and separate clearly in shortwave
+            infrared — and telling those two apart is the single hardest thing
+            in this whole task.</div>
 
           <div class="ev-sub">
             <span class="ev-sub-lab">Index over time</span>
             <span class="ev-series" id="ev-series"></span>
           </div>
           <div id="ev-chart" class="ev-plot"></div>
-          <div class="ev-why" id="ev-dense-why">Nine annual composites, and —
-            with <b>dense</b> on — every clear-sky observation behind them. The
-            shape inside the year is the reading: a cropped field is bare, then
-            green, then cut; rough grazing is flat.</div>
+          <div class="ev-why" id="ev-dense-why">One value per year, and —
+            with <b>dense</b> on — every cloud-free satellite pass behind them.
+            The shape <i>within</i> a year is what to read: a cropped field goes
+            bare, then green, then cut; rough grazing stays flat.</div>
 
           <details class="ev-fold" id="ev-values-fold">
             <summary>What the existing land cover maps say</summary>
-            <div class="ev-why">Dynamic World, WorldCover, ESRI, GLanCE and
-              Hansen, at this point. Read them after you have made your own
-              call, not before: they disagree with each other, they are coarser
-              than the label being collected, and every one of them shows its
-              end year for a reason.</div>
+            <div class="ev-why">What Dynamic World, WorldCover, ESRI, GLanCE
+              and Hansen say about this point. Look after you have decided, not
+              before: they disagree with each other, they are coarser than the
+              label you are making, and each one is shown with the last year it
+              can answer for — several stop before 2024.</div>
             <div id="ev-values"></div>
           </details>
         </div>
 
         <div class="sec" id="sec-year" style="display:none">
-          <div class="lab">When did it change?
+          <div class="lab" role="heading" aria-level="2">When did it change?
             <span class="kbd-hint">optional</span></div>
           <div class="years" id="years"></div>
-          <div class="note-small">Wayback already made you step through the
-            dates, so this costs a click and is the only thing that could ever
-            support an annual model. Leave it if you are not sure.</div>
-        </div>
-
-        <div class="sec">
-          <div class="lab">Flags</div>
-          <div class="flags" id="flags"></div>
-        </div>
-
-        <div class="sec" id="sec-uninterp" style="display:none">
-          <div class="lab">Why can it not be interpreted?</div>
-          <div class="flags" id="uninterp-reasons"></div>
-          <input type="text" id="uninterp-other" placeholder="say what stopped you"
-                 style="display:none;width:100%;margin-top:6px;font-size:12px;padding:5px 7px;border:1px solid var(--line);border-radius:6px">
-          <div class="note-small">Required. These rows never reach the training
-            set, so the only thing they can still buy is a count of <i>why</i> —
-            which is what says whether the next round needs different imagery or
-            different points.</div>
-        </div>
-
-        <div class="sec" id="sec-conf">
-          <div class="lab">Confidence <span class="kbd-hint"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span></div>
-          <div class="conf" id="conf"></div>
-        </div>
-
-        <div class="sec">
-          <div class="lab">Notes</div>
-          <textarea id="notes" placeholder="notes for later review / adjudication — what you saw, which boundary was in doubt, what would settle it"></textarea>
+          <div class="note-small">You have already stepped through the dates,
+            so this is one extra click — and it is the only thing that could
+            ever let us model change year by year. Leave it blank if you are not
+            sure.</div>
         </div>
 
         <div class="sec" id="sec-meta" style="display:none">
-          <div class="lab" id="meta-head" title="Descriptive context — WorldCover class, slope, biome. Visible on purpose: the coverage gap these points were drawn to fill is a bare-ground gap, and you should be able to see when you are in it.">About this location</div>
+          <div class="lab" role="heading" aria-level="2" id="meta-head" title="Background on the place — land cover class, slope, biome. Shown on purpose: these points were chosen partly to fill a gap in bare, sparsely vegetated ground, and it helps to know when you are in it.">About this location</div>
           <table class="meta-table" id="meta-table"></table>
-          <div id="meta-why" style="display:none" title="Revealed after you save. Rank and acquisition score say the model finds this point hard, which is exactly the thing that must not anchor the call."></div>
+          <div id="meta-why" style="display:none" title="Shown only after you save. These say how hard the model found this point — exactly the kind of hint that must not sway the call itself."></div>
         </div>
 
         <details class="hint" id="model-hint" style="display:none">
-          <summary>Show what the model thinks</summary>
-          <div class="why">Collapsed on purpose. A shown posterior anchors the
-            call, and on this target the model is <i>most confident where it is
-            wrong</i> — bare ground read as built-up is the largest map error and
-            it is a confident one. Decide from the imagery first, then open this
-            if it helps.</div>
+          <summary>Show the model’s own guess (after you decide)</summary>
+          <div class="why">Hidden on purpose. Seeing the model’s answer pulls
+            your own towards it, and on this task the model is <i>most sure
+            exactly where it is wrong</i> — bare ground mistaken for built-up is
+            the biggest error on the map and it is a confident one. Decide from
+            the imagery first, then open this if it still helps.</div>
           <div class="body" id="model-hint-body"></div>
         </details>
       </div>
     </div>
-    <!-- Save is the other half of the same complaint: the button that ends the
-         point must not be somewhere the interpreter has to go and find. -->
-    <div id="panel-foot">
-      <div class="actions">
-        <button id="btn-save" disabled>Save &amp; next ⏎</button>
-        <button id="btn-skip" title="Come back to this one. Whatever is in the form is kept as a draft and restored when you return, and the batch is not complete while anything is deferred.">Defer</button>
-      </div>
-      <div id="toast" style="display:none"></div>
-    </div>
   </div>
 </div>
 
-<div id="strip"></div>
+<div id="strip" role="toolbar" aria-label="Points in this batch"></div>
 <div id="counts"></div>
 
-<div id="lightbox">
-  <button class="lb-close" id="lb-close" title="Esc">✕</button>
+<div id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lb-cap">
+  <button class="lb-close" id="lb-close" aria-label="Close (Esc)" title="Esc">✕</button>
   <div class="lb-cap" id="lb-cap"></div>
   <div id="lb-slice" style="display:none"></div>
   <img id="lb-img" alt="Sentinel-2 chip">
@@ -1079,28 +1344,61 @@ const CFG = Object.assign({
 // The only legend common to habloss_main, habloss_landwater and recover
 // (model_zoo.COARSE). Do not add a fourth class here without changing that map:
 // a label the training frame cannot coarsen is a label that gets dropped.
+//: These follow the LUCAS typology as the campaign cribsheet states it, and
+//: `CRIBSHEET_URL` is linked from the legend so the full text is one click from
+//: the call. Three of them were under-specified against it and one contradicted
+//: it; what changed, and why each change is load-bearing:
+//:
+//:  * Nature gains **sand, ice and snow** and, more importantly, the carve-out
+//:    that sand and rock **at a mine or a development are Artificial**. That is
+//:    the §AL-T error in one sentence: bare ground is the largest map error and
+//:    the model is more confident when it is wrong, so the one rule that tells
+//:    an interpreter which side of it a bare pixel is on belongs on screen.
+//:  * Cropland gains the exclusion that carries the whole class: **permanent
+//:    pasture and grazing that is not ploughed in rotation is Nature.** Only
+//:    temporary grassland inside a 1-5 year rotation is Cropland. This is the
+//:    boundary the ledger says caps change-F1, and the app was silent on it.
+//:  * Cropland names WHICH plantations, because "plantations" alone is the
+//:    other half of the same question: B84 makes oil palm, rubber, coffee, tea,
+//:    cocoa and coconut Cropland, while a stand grown for timber is in no B
+//:    class and falls to Nature. A felling is therefore Nature -> Nature or
+//:    Cropland -> Cropland depending on the stand, and forest cleared *to* a
+//:    crop plantation is the Nature -> Cropland this campaign counts.
+//:  * Artificial loses **"urban green inside the built fabric"**, which the
+//:    cribsheet does not support -- LUCAS codes a park by its cover. What it
+//:    does say is the opposite-looking rule that is easy to misremember as the
+//:    same one: a car park or a road is Artificial *even where the cover is
+//:    grass*, because the class is what the feature IS. It gains greenhouses,
+//:    solar farms and dumps, which are in the typology and were nowhere here.
 const CLASSES = [
   { key: 'Nature',     k: 'A', k2: 'Z', css: 'nature',
-    hint: 'forest, shrub, grass, wetland, bare rock, water — anything not farmed and not built' },
+    hint: 'anything that is neither farmed nor built: natural forest and timber plantation, shrub, grass, permanent pasture, wetland, water, bare rock, sand, ice and snow' },
   { key: 'Cropland',   k: 'S', k2: 'X', css: 'cropland',
-    hint: 'actively cultivated: fields, orchards, plantations, fallow in a rotation' },
+    hint: 'planted and cultivated — arable, orchards, vineyards, olive groves, crop plantations (oil palm, rubber, coffee, tea, coconut), and grassland ploughed inside a rotation' },
   { key: 'Artificial', k: 'D', k2: 'C', css: 'artificial',
-    hint: 'buildings, roads, quarries, hard surfaces, urban green inside the built fabric' }
+    hint: 'man-made cover: buildings, greenhouses, roads and railways over 3 m, yards and car parks, quarries and mines, dams, solar farms, dumps' }
 ];
+
+//: The campaign's full class definitions. Overridable per deployment, with the
+//: RECOVER cribsheet as the default so a dragged-in copy of this folder still
+//: has the definitions one click away.
+const CRIBSHEET_URL = CFG.cribsheetUrl
+  || 'https://docs.google.com/document/d/1tofoeCzcGfMgpGNCG296d0eoi5a6TuqzoXpDJkNVOA8/edit';
 const CLASS_KEYS = CLASSES.map(c => c.key);
 
 const FLAGS = [
-  { key: 'unsure',        label: 'unsure',            k: 'U',
+  { key: 'unsure',        label: 'unsure',            k: 'U', tone: 'caution',
+    where: 'call',
     tip: 'You made a call but would not defend it. Kept in the set and reported separately.' },
-  { key: 'uninterpretable', label: 'cannot interpret', k: 'K',
+  { key: 'uninterpretable', label: 'cannot interpret', k: 'K', tone: 'caution',
     tip: 'No usable imagery at one or both dates, or persistent cloud. Not a label — excluded.' },
-  { key: 'mixed',         label: 'mixed cell',        k: 'M',
+  { key: 'mixed',         label: 'mixed cell',        k: 'M', tone: 'caution',
     tip: 'The point sits on a boundary or the cell is genuinely two things.' },
-  { key: 'imagery_gap',   label: 'imagery date gap',  k: 'G',
+  { key: 'imagery_gap',   label: 'imagery date gap',  k: 'G', tone: 'caution',
     tip: 'The nearest captures are far from 2018 / 2024 and the difference could be the gap, not the change.' },
   { key: 'transient_change', label: 'change seen, ends match', k: 'T',
     tip: 'Something happened between the dates and the land came back to what it was — cleared then regrown, built then demolished. The two-endpoint label cannot say this, so say it here.' },
-  { key: 'interesting',   label: 'flag for review',   k: 'R',
+  { key: 'interesting',   label: 'flag for review',   k: 'R', where: 'call',
     tip: 'Worth a second reader — an odd case, or one you want in the write-up.' }
 ];
 
@@ -1345,12 +1643,63 @@ function esc(s) {
     ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 }
 function $(id) { return document.getElementById(id); }
-function setLoading(msg, sub) {
+// `#loading` is two different things wearing one overlay: five dismissible
+// dialogs (batch complete, deferred points, the sync read-out, the help brief)
+// and two GATES that must not be dismissed -- the first-run brief and the
+// identity gate, which exist so a batch cannot be opened by nobody. Esc used to
+// close all seven.
+let loadingBlocking = false;
+function loadingBlocks() {
+  return loadingBlocking && $('loading').style.display !== 'none';
+}
+function setLoading(msg, sub, opts) {
+  loadingBlocking = !!(opts && opts.blocking);
   $('loading').style.display = 'flex';
   $('loading-msg').textContent = msg;
   $('loading-sub').innerHTML = sub || '';
+  // Screen readers announce a dialog when focus lands in it, and a keyboard user
+  // who has just been handed one should not have to Tab from the top of the page
+  // to reach its button.
+  requestAnimationFrame(() => {
+    if ($('loading').style.display === 'none') return;
+    if ($('loading').contains(document.activeElement)) return;
+    const first = $('loading').querySelector(
+      'select, input, button, [tabindex]:not([tabindex="-1"])');
+    if (first) first.focus();
+  });
 }
-function hideLoading() { $('loading').style.display = 'none'; }
+function hideLoading() { loadingBlocking = false; $('loading').style.display = 'none'; }
+
+/** What a dialog button can ask for.
+ *
+ *  These were eleven inline handler attributes. Inline
+ *  handlers need every function they name to be a *global* (so the module
+ *  boundary is a lie), they are invisible to a linter, they cannot be tested
+ *  except through the DOM, and they are the one thing that makes a `script-src`
+ *  CSP impossible on this page. One delegated listener replaces all of them.
+ *
+ *  It also closes a real hole: the batch-picker row interpolated a filename
+ *  into a single-quoted JS string inside a double-quoted attribute, so a batch
+ *  file with an apostrophe in its name produced a broken button. `data-arg`
+ *  goes through `esc()` like any other attribute and has no second grammar to
+ *  get wrong.
+ */
+const LOADING_ACTIONS = {
+  close:  () => hideLoading(),
+  goto:   arg => { hideLoading(); goTo(Number(arg)); },
+  queue:  arg => { hideLoading(); setQueue(arg); },
+  resync: () => { hideLoading(); syncBackoff = 2000; syncNow(); },
+  batch:  arg => { hideLoading(); openBatchFile(arg); }
+};
+
+function initLoadingActions() {
+  $('loading').addEventListener('click', e => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn) return;
+    const act = LOADING_ACTIONS[btn.dataset.act];
+    if (act) { e.preventDefault(); act(btn.dataset.arg); }
+  });
+}
 function isLoadingVisible() {
   const el = $('loading');
   return !!el && el.style.display !== 'none';
@@ -1369,6 +1718,9 @@ function transitionLabel(a, b) { return a + ' -> ' + b; }
 // asked a question they had no reason to expect -- and every earlier keystroke
 // had gone into an app that did not yet know whose workspace it was.
 const INTRO_KEY = 'recover-labels:seen-intro';
+
+/** A gate, not a dialog: Esc does not close it. */
+function setLoadingGate(msg, sub) { setLoading(msg, sub, { blocking: true }); }
 
 /** The roster picker, shared by the first-run brief and the identity gate. */
 function identityPickerHTML() {
@@ -1449,7 +1801,7 @@ function showIntro(onDone) {
   const classes = CLASSES.map(c =>
     '<b style="color:var(--' + c.css + ')">' + esc(c.key) + '</b> — ' + esc(c.hint))
     .join('<br>');
-  setLoading('Calling land cover in 2018 and 2024',
+  setLoadingGate('Calling land cover in 2018 and 2024',
     '<div class="sub left">'
     + '<p>For each point, say what the land was in <b>2018</b> and what it is in '
     + '<b>2024</b>. The pair is the label. Judge the <b>point</b>, not the whole '
@@ -1485,7 +1837,7 @@ function showIdentityGate(onDone) {
   // given is silently dropped -- so the interpreter picks their name and the
   // call they had already made is not restored. It is one gate.
   if ($('intro-go') && isLoadingVisible()) return;
-  setLoading('Who is labelling?',
+  setLoadingGate('Who is labelling?',
     '<div class="sub left"><p>Every row is keyed by '
     + '<b>(campaign, batch, point, expert)</b>. Two people reading the same point '
     + 'is the only measurement this campaign makes of its own label noise, and it '
@@ -1750,6 +2102,7 @@ function adoptBatch(batch) {
   if (!batch.points.length) throw new Error('batch has no usable points');
   S.batch = batch;
   S.points = batch.points;
+  snapChipWidthToBake();
   S.labels = LS.load(batch.batch_id);
   S.drafts = LS.loadDrafts(batch.batch_id);
   S.others = {};
@@ -1777,7 +2130,7 @@ function adoptBatch(batch) {
     const note = batchOpeningNote(batch);
     if (!note) return;
     setLoading(note.title, note.body
-      + '<br><br><button class="go" onclick="hideLoading()">start</button>');
+      + '<br><br><button class="go" data-act="close">start</button>');
   };
   // The identity comes first, and it is a gate rather than a nag: the
   // localStorage namespace, the queues and the sheet pull are all per expert, so
@@ -1848,7 +2201,8 @@ function buildChoices() {
   for (const year of ['2018', '2024']) {
     $('ch-' + year).innerHTML = CLASSES.map(c =>
       '<button class="choice ' + c.css + '" data-year="' + year + '" '
-      + 'data-class="' + c.key + '" title="' + esc(c.hint) + '">'
+      + 'aria-pressed="false" data-class="' + c.key + '" title="'
+      + esc(c.hint) + '">'
       + '<span class="sw" style="background:var(--' + c.css + ')"></span>'
       + esc(c.key) + '<span class="k">' + (year === '2018' ? c.k : c.k2) + '</span>'
       + '</button>').join('');
@@ -1860,32 +2214,84 @@ function buildChoices() {
   // buttons is worse than no legend. The boundary note is the one the ledger
   // says caps change-F1 -- several readers disagreeing about it silently is the
   // failure this block exists to prevent.
+  const crib = $('legend-crib');
+  if (crib) crib.href = CRIBSHEET_URL;
   $('legend-body').innerHTML = CLASSES.map(c =>
     '<div class="cls"><span class="nm"><i style="background:var(--' + c.css
     + ')"></i><span style="color:var(--' + c.css + '-ink)">' + esc(c.key)
     + '</span></span><span class="hint">' + esc(c.hint) + '</span></div>').join('')
-    + '<div class="rule hard"><span class="ic">⚠</span><div><b>Cropland / Nature '
-    + 'is where readers disagree</b>, and that disagreement is what caps the '
-    + 'model. Rough grazing, long fallow and abandoned fields are the hard '
-    + 'cases. Do not guess — make your best call, tick <b>unsure</b>, and say in '
-    + 'the notes what you saw.</div></div>'
+    + '<div class="rule hard"><span class="ic">⚠</span><div><b>Cropland versus '
+    + 'Nature is where labellers disagree with each other</b>, and that '
+    + 'disagreement sets the ceiling on how good the model can get. The rule is <b>ploughing, not grass</b>: grassland is Cropland only '
+    + 'where it is cleared or sown inside a rotation. Permanent pasture and rough '
+    + 'grazing are <b>Nature</b>. Long fallow and abandoned fields are the hard '
+    + 'cases — make your best call, tick <b>unsure</b>, and say in the notes what '
+    + 'you saw.</div></div>'
+    + '<div class="rule hard"><span class="ic">⛏</span><div><b>Bare ground is '
+    + 'Nature — unless it is being worked.</b> Sand and rock belonging to a mine, '
+    + 'a quarry or a development site are <b>Artificial</b>. This is the single '
+    + 'biggest mistake the current map makes, and one it makes confidently, so '
+    + 'this call is worth the extra look.</div></div>'
+    + '<div class="rule"><span class="ic">▦</span><div>A feature is Artificial for '
+    + '<b>what it is, not what covers it</b>: a grassed car park, a farmyard, a '
+    + 'cemetery and an unsealed road are all Artificial, and a road, railway or '
+    + 'runway counts once it is over <b>3 m</b> wide. Greenhouses, solar farms and '
+    + 'dumps are Artificial too. A park inside a city is coded by its cover, so it '
+    + 'is Nature.</div></div>'
     + '<div class="rule"><span class="ic">◎</span><div>Call the <b>point</b>, not '
     + 'the cell. The white square is 100 m and is what the label is about; the '
     + 'dashed square is the 5 km cell the point was drawn from, and is context '
     + 'only.</div></div>'
     + '<div class="rule"><span class="ic">⏱</span><div>Call each date on its own '
     + 'evidence. A 2024 that is obviously built does not make 2018 built — the '
-    + 'pair of independent calls <i>is</i> the transition.</div></div>';
+    + 'pair of independent calls <i>is</i> the transition.</div></div>'
+    // Logging is NOT one rule, and stating it as one was wrong. B70/B80 of the
+    // typology make a crop plantation Cropland -- oil palm, rubber, coffee,
+    // tea, cocoa, coconut, fruit, olives, vines, short-rotation willow -- while
+    // forest grown for timber is in none of the B classes and falls to Nature
+    // with everything else that is neither farmed nor built. So a felling is
+    // Nature -> Nature or Cropland -> Cropland depending on the stand, and the
+    // conversion BETWEEN the two is the one the campaign is counting.
+    + '<div class="rule hard"><span class="ic">🪓</span><div><b>A felling is '
+    + 'whichever class was growing.</b> Natural forest and timber plantation are '
+    + '<b>Nature</b>; a crop plantation — oil palm, rubber, coffee, tea, cocoa, '
+    + 'coconut, fruit, olives, vines, short-rotation willow — is <b>Cropland</b>. '
+    + 'So clearing either one and leaving it is Nature → Nature or Cropland → '
+    + 'Cropland: the three-class transition cannot carry a clearance on its own, '
+    + 'so call both dates as you see them and tick <b>change seen, ends '
+    + 'match</b>. Natural forest cleared <i>to</i> a crop plantation is '
+    + '<b>Nature → Cropland</b>, and that one is the habitat loss this campaign '
+    + 'exists to count — look at what replaced the trees before you call the '
+    + 'second date.</div></div>'
+    + '<div class="rule"><span class="ic">📖</span><div>These are the <b>LUCAS</b> '
+    + 'classes as the campaign defines them. <a href="' + esc(CRIBSHEET_URL)
+    + '" target="_blank" rel="noopener">Full definitions, with the worked '
+    + 'cases ↗</a> — worth reading once before your first batch, and again the '
+    + 'first time a point argues with you.</div></div>';
 
-  $('flags').innerHTML = FLAGS.map(f =>
-    '<button class="flag" data-flag="' + f.key + '" title="' + esc(f.tip) + '">'
-    + esc(f.label) + ' <kbd>' + f.k + '</kbd></button>').join('');
-  document.querySelectorAll('.flag').forEach(b => {
+  // `tone` drives the colour, so the "amber means the label is caveated" rule
+  // is a property of the flag rather than of a stylesheet that can drift from
+  // it. `transient_change` and `interesting` record an observation and are
+  // selected-blue like every other on-state in the app.
+  // Two containers, one list. Both are in the head now -- `where: 'call'`
+  // decides only whether a flag sits below the head's own scroller, next to the
+  // transition read-out it qualifies, or above it with the rest of the form.
+  // Splitting the LIST instead would let a flag land in neither.
+  const flagHTML = f =>
+    '<button class="flag' + (f.tone === 'caution' ? ' caution' : '')
+    + '" data-flag="' + f.key + '" aria-pressed="false" title="'
+    + esc(f.tip) + '">'
+    + esc(f.label) + ' <kbd>' + f.k + '</kbd></button>';
+  $('flags-call').innerHTML =
+    FLAGS.filter(f => f.where === 'call').map(flagHTML).join('');
+  $('flags').innerHTML =
+    FLAGS.filter(f => f.where !== 'call').map(flagHTML).join('');
+  document.querySelectorAll('.flag[data-flag]').forEach(b => {
     b.addEventListener('click', () => toggleFlag(b.dataset.flag));
   });
   $('uninterp-reasons').innerHTML = UNINTERP_REASONS.map(r =>
-    '<button class="flag" data-reason="' + r.key + '">' + esc(r.label)
-    + '</button>').join('');
+    '<button class="flag" data-reason="' + r.key + '" aria-pressed="false">'
+    + esc(r.label) + '</button>').join('');
   document.querySelectorAll('#uninterp-reasons button').forEach(b => {
     b.addEventListener('click', () => setReason(b.dataset.reason));
   });
@@ -1895,7 +2301,8 @@ function buildChoices() {
     markDraftDirty();
   });
   $('years').innerHTML = CHANGE_YEARS.map(y =>
-    '<button data-year="' + y + '">' + esc(y) + '</button>').join('');
+    '<button data-year="' + y + '" aria-pressed="false">' + esc(y)
+    + '</button>').join('');
   document.querySelectorAll('#years button').forEach(b =>
     b.addEventListener('click', () => setYear(b.dataset.year)));
 
@@ -1904,18 +2311,39 @@ function buildChoices() {
     ['2', 'medium', 'A reasonable reading; another interpreter might differ.'],
     ['3', 'high',   'Unambiguous at both dates.']
   ].map(([v, l, t]) =>
-    '<button data-conf="' + v + '" title="' + esc(t) + '">' + v + ' · ' + l
-    + '</button>').join('');
+    '<button data-conf="' + v + '" aria-pressed="false" title="' + esc(t) + '">'
+    + v + ' · ' + l + '</button>').join('');
   document.querySelectorAll('#conf button').forEach(b => {
     b.addEventListener('click', () => setConf(Number(b.dataset.conf)));
   });
 
   FORM.choices = [...document.querySelectorAll('.choice')];
-  FORM.flags = [...document.querySelectorAll('#flags .flag')];
+  FORM.flags = [...document.querySelectorAll('#flags .flag, #flags-call .flag')];
   FORM.conf = [...document.querySelectorAll('#conf button')];
   FORM.years = [...document.querySelectorAll('#years button')];
   FORM.reasons = [...document.querySelectorAll('#uninterp-reasons button')];
   $('notes').addEventListener('input', markDraftDirty);
+
+  // The head's own fold. See `#panel-head-scroll.more`.
+  const hs = $('panel-head-scroll');
+  if (hs) {
+    hs.addEventListener('scroll', updateHeadOverflow, { passive: true });
+    // The box, for a window resize; `renderForm` for the content, because
+    // revealing `sec-uninterp` grows scrollHeight without moving the box at
+    // all once the head is already at its cap.
+    if (window.ResizeObserver) new ResizeObserver(updateHeadOverflow).observe(hs);
+    window.addEventListener('resize', updateHeadOverflow);
+    updateHeadOverflow();
+  }
+}
+
+/** Does the pinned form have more of itself below the fold? A faded edge and a
+ *  thin scrollbar say so; a button row sliced through the middle does not. */
+function updateHeadOverflow() {
+  const el = $('panel-head-scroll');
+  if (!el) return;
+  el.classList.toggle('more',
+    el.scrollHeight - el.clientHeight - el.scrollTop > 2);
 }
 
 function pick(year, cls) {
@@ -1960,18 +2388,23 @@ function saveable() {
 
 function renderForm() {
   const uninterpretable = cur.flags.has('uninterpretable');
+  // `aria-pressed` alongside every `.on`. Without it a screen reader reads
+  // "Nature, button" whether or not it is the call that has been made, which is
+  // the one thing the panel is for.
+  const press = (b, on) => { b.classList.toggle('on', on);
+                             b.setAttribute('aria-pressed', on ? 'true' : 'false'); };
   for (const b of FORM.choices) {
-    b.classList.toggle('on', cur['c' + b.dataset.year] === b.dataset.class);
+    press(b, cur['c' + b.dataset.year] === b.dataset.class);
     b.classList.toggle('dim', uninterpretable);
     b.disabled = uninterpretable;
   }
-  for (const b of FORM.flags) b.classList.toggle('on', cur.flags.has(b.dataset.flag));
-  for (const b of FORM.reasons) b.classList.toggle('on', cur.reason === b.dataset.reason);
+  for (const b of FORM.flags) press(b, cur.flags.has(b.dataset.flag));
+  for (const b of FORM.reasons) press(b, cur.reason === b.dataset.reason);
   for (const b of FORM.conf) {
-    b.classList.toggle('on', cur.conf === Number(b.dataset.conf));
+    press(b, cur.conf === Number(b.dataset.conf));
     b.disabled = uninterpretable;
   }
-  for (const b of FORM.years) b.classList.toggle('on', cur.year === b.dataset.year);
+  for (const b of FORM.years) press(b, cur.year === b.dataset.year);
 
   $('sec-uninterp').style.display = uninterpretable ? '' : 'none';
   $('uninterp-other').style.display =
@@ -2006,8 +2439,18 @@ function renderForm() {
     out.textContent = cur.c2018 ? 'now call 2024'
                     : (cur.c2024 ? 'now call 2018' : 'pick both dates');
   }
-  $('btn-save').disabled = !saveable();
+  // The reason Save is disabled was `#transition-out`'s to give, and that sits
+  // at the top of the panel head while the button is in the foot -- a scroll
+  // apart on a short window. The button says it itself now.
+  const save = $('btn-save');
+  const ok = saveable();
+  save.disabled = !ok;
+  save.textContent = ok ? 'Save & next \u23CE'
+    : (uninterpretable ? 'Say why, then save'
+       : (cur.c2018 ? 'Pick 2024 to save'
+          : (cur.c2024 ? 'Pick 2018 to save' : 'Pick both dates to save')));
   markDraftDirty();
+  updateHeadOverflow();   // sec-uninterp changes the form's height
 }
 
 function clearForm() {
@@ -2188,17 +2631,32 @@ document.addEventListener('visibilitychange', () => {
 // which is exactly right and was advertised nowhere. It also makes a stuck key
 // visible: three identical toasts in a row is a thing you notice.
 let toastTimer = null;
-function toastSaved(rec) {
+// 1.5 s was not enough to read "saved · Nature → Artificial", decide it was
+// wrong, and reach the button the toast itself advertises. Backspace still
+// works, but the button is the discoverable half.
+const TOAST_MS = 4000;
+function toast(html, ms) {
   const el = $('toast');
-  if (!el) return;
-  const what = rec.transition || 'not interpretable';
-  el.innerHTML = 'saved · <b>' + esc(what) + '</b> '
-    + '<button id="toast-undo" title="Go back to that point with the answer '
-    + 'reloaded (Backspace)">⌫ undo</button>';
+  if (!el) return null;
+  el.innerHTML = html;
   el.style.display = '';
-  $('toast-undo').addEventListener('click', () => { el.style.display = 'none'; goBack(); });
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 1500);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, ms || TOAST_MS);
+  return el;
+}
+function toastSaved(rec) {
+  const what = rec.transition || 'not interpretable';
+  const el = toast('saved · <b>' + esc(what) + '</b> '
+    + '<button id="toast-undo" title="Go back to that point with the answer '
+    + 'reloaded (Backspace)">⌫ undo</button>');
+  if (!el) return;
+  $('toast-undo').addEventListener('click', () => { el.style.display = 'none'; goBack(); });
+  // Reaching for the undo must not race the timer that takes it away.
+  el.onmouseenter = el.onfocusin = () => clearTimeout(toastTimer);
+  el.onmouseleave = el.onfocusout = () => {
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.style.display = 'none'; }, 1200);
+  };
 }
 
 // ── the two queues ──────────────────────────────────────────────────────────
@@ -2366,16 +2824,15 @@ function announceDone() {
       'This batch names its readers, and ' + esc(Expert.name() || 'you')
       + ' is not one of them. Pick another from the <b>Batch</b> card, or open '
       + 'the app with your own <code>?expert=</code> link.'
-      + '<br><br><button onclick="hideLoading()" style="padding:7px 16px;'
-      + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:13px">'
-      + 'look anyway</button>');
+      + '<br><div class="go-row"><button class="go secondary" '
+      + 'data-act="close">look anyway</button></div>');
     return;
   }
   const deferred = S.points.filter(q => S.drafts[q.id] && !S.labels[q.id]);
   const second = S.points.filter(q => outstanding(q, 'second')).length;
   if (S.batch.calibration) {
     setLoading('Calibration complete', calibrationReport()
-      + '<button class="go" onclick="hideLoading()">close</button>');
+      + '<button class="go" data-act="close">close</button>');
     return;
   }
   // A batch is not complete while a deferred point is still deferred. Saying
@@ -2386,33 +2843,78 @@ function announceDone() {
       'You came back to these on purpose. Each one still has whatever you had '
       + 'typed, restored.<br><br>'
       + deferred.slice(0, 12).map(q =>
-          '<button onclick="hideLoading();goTo(' + S.points.indexOf(q) + ')" '
-          + 'style="margin:3px;padding:5px 10px;border-radius:6px;border:1px solid '
-          + '#ccc;cursor:pointer;font-size:12px">' + esc(q.id) + '</button>').join('')
-      + '<br><br><button onclick="hideLoading()" style="padding:7px 16px;'
-      + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:13px">'
-      + 'later</button>');
+          '<button class="pick" data-act="goto" data-arg="'
+          + S.points.indexOf(q) + '">' + esc(q.id) + '</button>').join('')
+      + '<div class="go-row"><button class="go secondary" '
+      + 'data-act="close">later</button></div>');
     return;
   }
   if (S.queue === 'mine' && second) {
     setLoading('Your points are done — ' + second + ' second reading'
       + (second === 1 ? '' : 's') + ' to go',
       'These are the deliberate overlap: points another expert has already '
-      + 'called. Their call is hidden on purpose — the agreement number is the '
-      + 'campaign\'s only measurement of the label noise that caps change-F1, '
-      + 'and it only means something if you decide the point independently.'
-      + '<br><br><button class="go" onclick="hideLoading();setQueue(\'second\')">'
+      + 'called. Their call is hidden on purpose — how often two people agree '
+      + 'is the only measure we have of how consistent the labels are, and it '
+      + 'means nothing unless you decide the point independently.'
+      + '<br><br><button class="go" data-act="queue" data-arg="second">'
       + 'start the second readings</button>');
     return;
   }
+  // It said "sync it, then take the next batch" and then offered one button,
+  // *back to the batch*. Both named actions meant closing the dialog and going
+  // to find controls in the card stack -- at the single moment in the loop
+  // where AL4's whole finding depends on the next batch actually being taken.
+  const held = Outbox.size();
+  const next = nextBatchEntry();
   setLoading('Batch complete — ' + n + ' of ' + S.points.length + ' labelled',
-    'Sync it, then take the next batch. Small sequential batches are the whole '
-    + 'point: the same acquisitions delivered in one go were measured at '
-    + '<b>&minus;0.003</b> change-F1, and in twenty batches at <b>+0.031</b>.'
+    'Sync it, then take the next batch. Small batches, returned one at a '
+    + 'time, are the whole point: we measured the same set of points helping '
+    + 'the model <b>ten times more</b> when handed back in twenty batches than '
+    + 'in one.'
     + '<br><br>' + batchShapeHTML()
-    + '<br><button onclick="hideLoading()" style="padding:7px 16px;'
-    + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:13px">'
-    + 'back to the batch</button>');
+    + '<div class="go-row">'
+    + (CFG.sheetUrl
+        ? '<button class="go" id="done-sync">'
+          + (held ? '\u21E7 sync ' + held + ' row' + (held === 1 ? '' : 's')
+                  : '\u21E7 sync')
+          + '</button>'
+        : '<button class="go" id="done-export">\u2B07 export</button>')
+    + (next
+        ? '<button class="go' + (CFG.sheetUrl ? ' secondary' : '')
+          + '" id="done-next">next batch \u00B7 '
+          + esc(next.batch_id || next.file) + '</button>'
+        : '')
+    + '<button class="go secondary" id="done-back">back to the batch</button>'
+    + '</div>');
+  const on = (id, fn) => { const b = $(id); if (b) b.addEventListener('click', fn); };
+  on('done-back', hideLoading);
+  on('done-export', () => { exportBatch(); hideLoading(); });
+  on('done-sync', () => {
+    const b = $('done-sync');
+    b.disabled = true; b.textContent = 'syncing\u2026';
+    syncBackoff = 2000;
+    Promise.resolve(syncNow()).then(() => {
+      if (!$('done-sync')) return;
+      const left = Outbox.size();
+      b.textContent = left ? left + ' still held \u2014 retry' : '\u2713 synced';
+      b.disabled = !left;
+    });
+  });
+  on('done-next', () => { hideLoading(); openBatchFile(next.file); });
+}
+
+/** The next manifest entry with unfinished points assigned to this expert.
+ *  Same rule `pickEntryBatch` boots with, minus the batch already open. */
+function nextBatchEntry() {
+  const id = Expert.id();
+  if (!id || !S.manifest.length) return null;
+  const here = S.batch && S.batch.batch_id;
+  return S.manifest.find(b => {
+    if (b.batch_id === here) return false;
+    const a = b.assigned || {};
+    const mine = (a[id] || 0) > 0 || (b.assigned_to && String(b.assigned_to) === id);
+    return mine && !batchLooksDone(b);
+  }) || null;
 }
 
 function goTo(i) {
@@ -2539,12 +3041,12 @@ function renderModelHint(p) {
       + Number(v).toFixed(3) + '</td></tr>').join('') + '</table>';
   }
   if (p.conformal_set && p.conformal_set.length) {
-    html += '<div style="margin-top:6px"><b>90% conformal set:</b> '
+    html += '<div style="margin-top:6px"><b>Shortlist (right 9 times in 10):</b> '
       + p.conformal_set.map(esc).join(', ')
-      + '<div class="why" style="margin-top:4px">Per-class (Mondrian) '
-      + 'thresholds. A marginal set is not usable here — it reads 0.8999 '
-      + 'coverage while covering <i>Cropland &rarr; Nature</i> 13% of the '
-      + 'time.</div></div>';
+      + '<div class="why" style="margin-top:4px">Not a prediction — a set of '
+      + 'answers wide enough that the truth is inside it about nine times out '
+      + 'of ten, worked out separately for each transition so the rare ones are '
+      + 'covered as well as the common ones.</div></div>';
   }
   $('model-hint-body').innerHTML = html;
 }
@@ -2574,11 +3076,30 @@ function dotTitle(p) {
   return p.id + ' — unlabelled';
 }
 
+// Roving tabindex: one Tab stop for the whole strip, not 1,250 of them. Tab
+// reaches the current point and ←/→/Home/End walk it from there -- putting
+// every dot in the tab order would mean Tabbing past a thousand controls to
+// get from the strip to the Save button.
+//
+// `buildStrip` repaints every dot on every navigation, so this runs 1,250 times
+// per Enter. `role` never changes and is set once at creation; `dotTitle` is
+// computed once rather than twice; and the whole desired state is compared as
+// one string before anything is written, which is correct by construction --
+// it needs no view about WHICH of labels/drafts/others/S.i moved.
 function paintDot(el, i) {
   const p = S.points[i];
-  el.className = 'dot ' + dotClass(p, i) + (i === S.i ? ' cur' : '');
-  el.title = dotTitle(p);
+  const cur = i === S.i;
+  const cls = 'dot ' + dotClass(p, i) + (cur ? ' cur' : '');
+  const title = dotTitle(p);
   const label = S.labels[p.id] ? '' : String(i + 1);
+  const state = cls + '\u0000' + title + '\u0000' + label + (cur ? '\u00001' : '');
+  if (el._paint === state) return;
+  el._paint = state;
+  el.className = cls;
+  el.title = title;
+  el.setAttribute('aria-label', title);
+  el.setAttribute('tabindex', cur ? '0' : '-1');
+  el.setAttribute('aria-current', cur ? 'true' : 'false');
   if (el.textContent !== label) el.textContent = label;
 }
 
@@ -2595,7 +3116,7 @@ function buildStrip() {
     return;
   }
   strip.innerHTML = S.points.map((_, i) =>
-    '<div class="dot" data-i="' + i + '"></div>').join('');
+    '<div class="dot" role="button" data-i="' + i + '"></div>').join('');
   const dots = strip.children;
   for (let i = 0; i < dots.length; i++) paintDot(dots[i], i);
   stripBuiltFor = tag;
@@ -2618,9 +3139,30 @@ function scrollStripToCurrent() {
 // Delegated, so switching point does not re-attach 1,250 listeners.
 function wireStrip() {
   const strip = $('strip');
-  if (strip) strip.addEventListener('click', e => {
+  if (!strip) return;
+  strip.addEventListener('click', e => {
     const dot = e.target.closest('.dot');
     if (dot) goTo(Number(dot.dataset.i));
+  });
+  // Delegated for the same reason. The window handler's ←/→ already walks
+  // points, but it does not move the FOCUS, so a keyboard user who has tabbed
+  // into the strip would lose it on the first arrow press.
+  strip.addEventListener('keydown', e => {
+    const dot = e.target.closest && e.target.closest('.dot');
+    if (!dot) return;
+    const i = Number(dot.dataset.i);
+    let to = null;
+    if (e.key === 'ArrowRight') to = Math.min(S.points.length - 1, i + 1);
+    else if (e.key === 'ArrowLeft') to = Math.max(0, i - 1);
+    else if (e.key === 'Home') to = 0;
+    else if (e.key === 'End') to = S.points.length - 1;
+    else if (e.key === 'Enter' || e.key === ' ') to = i;
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    goTo(to);
+    const next = strip.children[to];
+    if (next) { focusFromKeyboard = true; next.focus(); }
   });
 }
 if (document.readyState === 'loading')
@@ -2633,10 +3175,11 @@ function anyLabelled() { return Object.keys(S.labels).length > 0; }
 function queueCounts() {
   let mine = 0, second = 0, unassigned = 0;
   for (const p of S.points) {
+    if (S.labels[p.id]) continue;
     const q = queueOf(p);
-    if (q === 'mine' && !S.labels[p.id]) mine++;
-    else if (q === 'second' && !S.labels[p.id]) second++;
-    else if (q === 'all' && !S.labels[p.id]) unassigned++;
+    if (q === 'mine') mine++;
+    else if (q === 'second') second++;
+    else if (q === 'all') unassigned++;
   }
   return { mine, second, unassigned };
 }
@@ -2671,7 +3214,11 @@ function updateProgress() {
   const records = Object.values(S.labels);
   const done = records.length;
   const n = S.points.length || 1;
-  $('progress').style.width = (100 * done / n).toFixed(1) + '%';
+  const pct = (100 * done / n);
+  $('progress').style.width = pct.toFixed(1) + '%';
+  $('progress-wrap').setAttribute('aria-valuenow', Math.round(pct));
+  $('progress-wrap').setAttribute('aria-valuetext',
+    done + ' of ' + S.points.length + ' labelled');
   $('pill-progress').textContent = done + ' / ' + S.points.length;
   renderQueues();
   // The live change/stable tally used to sit under the strip while the batch was
@@ -2708,7 +3255,7 @@ function batchShapeHTML() {
 // Map
 // ════════════════════════════════════════════════════════════════════════════
 let map;
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 // "Am I looking at the new one?" is otherwise a question you answer by reading
 // a diff. `document.lastModified` is the HTML's own timestamp, so a stale page
@@ -2729,11 +3276,34 @@ const BASES = {
 };
 const LABEL_TILES = ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'];
 
-// Insertion anchor. Everything the interpreter must see stays above the
-// imagery whatever date is showing, which is the bug the inspector app hit
-// first: a Wayback flip that hides the marker makes the point unlocatable.
-// Wayback and the Earth Engine rasters go below `labels`; the vectors were
-// added after it and stay on top of both.
+// TWO insertion anchors, because one was not enough and the failure was a
+// z-order that changed by itself as the interpreter worked.
+//
+// Wayback and the Earth Engine rasters both used to insert before `labels`,
+// and `addLayer(l, beforeId)` puts a layer immediately BELOW `beforeId` --
+// which means immediately ABOVE everything already there. So whichever of the
+// two was touched last won the top slot, and both orders happen in ordinary
+// use: pick an overlay and then turn the archive on and Wayback covers the
+// overlay; step to the next point, which re-mints the overlay per point, and a
+// 70%-opaque class raster covers the whole cell and the imagery with it. The
+// interpreter sees the layer they are labelling from disappear, having changed
+// nothing but the point.
+//
+// **Wayback is a basemap.** It is not an overlay that happens to be imagery --
+// it IS the imagery the label is made from, and the Earth Engine layers are
+// auxiliary priors drawn on top of it. So it gets a slot of its own directly
+// above the basemaps, and the order stops depending on what was clicked when.
+//
+// `imagery-slot` is an empty, invisible layer that exists only to be that
+// address. A hidden layer still holds its place in the style array and is a
+// valid `beforeId`, which is the whole trick: nothing has to be moved, and no
+// later insertion can get underneath the archive by accident.
+//
+// Everything the interpreter must see stays above both, which is the bug the
+// inspector app hit first: a Wayback flip that hides the marker makes the point
+// unlocatable. The vectors are added after `labels` and stay on top of all of
+// it.
+const ANCHOR_IMAGERY = 'imagery-slot';
 const ANCHOR_OVERLAY = 'labels';
 
 // The three overlay geometries, held here rather than read back out of the map.
@@ -2765,6 +3335,13 @@ function buildMap() {
     style.layers.push({ id: 'base-' + k, type: 'raster', source: 'base-' + k,
       layout: { visibility: k === 'esri' ? 'visible' : 'none' } });
   }
+  // The Wayback slot. Declared here rather than reached for at insertion time
+  // so that "the archive is under the overlays" is a property of the style and
+  // not of the order somebody clicked things in. Never drawn.
+  style.layers.push({ id: ANCHOR_IMAGERY, type: 'background',
+                      layout: { visibility: 'none' },
+                      paint: { 'background-opacity': 0 } });
+
   style.sources['labels'] = { type: 'raster', tiles: LABEL_TILES, tileSize: 256,
                               maxzoom: 19 };
   style.layers.push({ id: 'labels', type: 'raster', source: 'labels',
@@ -2818,6 +3395,10 @@ function buildMap() {
 
     initWayback();
     initLayerControls();
+    // Registered here rather than in `initInspector`, which runs before the map
+    // has a style. The guard is the checkbox: a click with the inspector off is
+    // Wayback's click and nothing else.
+    map.on('click', e => { if (INSP.on) inspQuery(e.lngLat); });
     mapReady = true;
     if (pendingPoint) { const p = pendingPoint; pendingPoint = null; flyToPoint(p); }
   });
@@ -2889,6 +3470,9 @@ function flyToPoint(p) {
   wb.pt = { lng: p.lon, lat: p.lat };
   wb.clickPt = null;
   if ($('wb-click')) $('wb-click').style.display = 'none';
+  // A reading of somewhere else, left on screen under a new point, is the one
+  // way this feature could put a wrong number in front of an interpreter.
+  inspClear();
   if (wb.onPointChange) wb.onPointChange();
 }
 
@@ -3184,8 +3768,10 @@ function initWayback() {
     } else {
       map.addSource(WB_SOURCE, { type: 'raster', tiles: [r.tileUrl], tileSize: 256,
         maxzoom: 23, attribution: 'Esri World Imagery Wayback' });
+      // ANCHOR_IMAGERY, not ANCHOR_OVERLAY: the archive is the basemap and
+      // belongs under every overlay whichever was turned on first.
       map.addLayer({ id: WB_LAYER, type: 'raster', source: WB_SOURCE,
-        paint: { 'raster-opacity': opacity.value / 100 } }, ANCHOR_OVERLAY);
+        paint: { 'raster-opacity': opacity.value / 100 } }, ANCHOR_IMAGERY);
     }
     map.setLayoutProperty(WB_LAYER, 'visibility', wb.on ? 'visible' : 'none');
     sel.value = String(wb.idx);
@@ -3818,8 +4404,7 @@ function explainSync() {
         + esc(SYNC.collabError) + '. Labelling is unaffected — this only means '
         + 'the app cannot currently tell you who else holds a point.</p>' : '')
     + '</div>'
-    + '<button class="go" onclick="hideLoading();syncBackoff=2000;syncNow()">'
-    + 'try now</button>');
+    + '<button class="go" data-act="resync">try now</button>');
 }
 
 // ── what the sheet already holds ────────────────────────────────────────────
@@ -4082,6 +4667,15 @@ const EE = { ready: false, loading: false, timer: null, mode: null };
 //: Not an OAuth client id and never sent anywhere -- see note 3 above.
 const EE_BROKER_CLIENT = 'recover-labelling-service-account';
 
+//: Apps Script's /exec answers an HTML 404 every so often on an endpoint that
+//: is otherwise healthy -- measured at 1 request in 4 against this deployment,
+//: with the three either side of it fine. Single-shot, that is a whole
+//: labelling session with no overlays: 'auto' falls back to the sign-in button
+//: nobody can complete and 'service' shows a deployment fault, both for a fault
+//: that has already gone away. The hourly refresh runs through here too, so a
+//: retry also keeps a session from losing Earth Engine mid-way.
+const EE_TOKEN_TRIES = 3;
+
 function eeMode() { return CFG.eeAuthMode || 'auto'; }
 
 /** The Apps Script that backs the Sheet, unless a deployment split them. */
@@ -4102,6 +4696,16 @@ function eeServiceWanted() {
  *   `access_token` reads as "not configured" too rather than as an error.
  */
 async function eeServiceToken() {
+  let last = null;
+  for (let i = 0; i < EE_TOKEN_TRIES; i++) {
+    if (i) await new Promise(ok => setTimeout(ok, 400 * i));
+    try { return await eeServiceTokenOnce(); }
+    catch (err) { last = err; }        // a THROW is a transport fault ...
+  }                                    // ... `null` is an answer and returns
+  throw last;                          //     from the first attempt
+}
+
+async function eeServiceTokenOnce() {
   const url = new URL(eeBrokerUrl(), location.href);
   url.searchParams.set('action', 'ee_token');
   if (CFG.submitToken) url.searchParams.set('token', CFG.submitToken);
@@ -4236,12 +4840,17 @@ function eeOnConnected(mode) {
   }
   if (mode === 'service')
     eeNote('Connected on the campaign\u2019s Earth Engine account — nobody '
-      + 'signs in. These are auxiliary priors, here because their errors are '
-      + 'independent of the model you are correcting, not because they are '
-      + 'right.');
+      + 'signs in. The layers below are second opinions, worth a look because '
+      + 'they go wrong in different ways from the model you are correcting — '
+      + 'not because they are right.');
   renderEELegend();
   eeShowLayer();
   prefetchChips();
+  // The strip's note was written before the account came up and says the
+  // photographs are still loading. Nothing else redraws it until the next
+  // point, so it sat there contradicting a connected app.
+  const p = S.points[S.i];
+  if (p) renderChips(p);
 }
 
 
@@ -4378,18 +4987,25 @@ function eeBox(p) {
                                 p.lon + dLon, p.lat + dLat], null, false);
 }
 
-function dwMode(year, box) {
+/** One year of Dynamic World over the point's box.
+ *
+ *  The collection id and the date window were written out twice, and they have
+ *  to agree: `dwbuilt` is a difference of two `dwBuiltProb` reads and `dw18`/
+ *  `dw24` are two `dwMode` reads, so a filter that drifts between them is a
+ *  difference of two different things. Filtering stays here, per year, because
+ *  `dwMode` over the global collection was reducing ~70 images per tile. */
+function dwYear(year, box) {
   return ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
     .filterDate(year + '-01-01', (year + 1) + '-01-01')
-    .filterBounds(box)
-    .select('label').mode().clip(box);
+    .filterBounds(box);
+}
+
+function dwMode(year, box) {
+  return dwYear(year, box).select('label').mode().clip(box);
 }
 
 function dwBuiltProb(year, box) {
-  return ee.ImageCollection('GOOGLE/DYNAMICWORLD/V1')
-    .filterDate(year + '-01-01', (year + 1) + '-01-01')
-    .filterBounds(box)
-    .select('built').mean().clip(box);
+  return dwYear(year, box).select('built').mean().clip(box);
 }
 
 function swatchLegend(rows) {
@@ -4553,7 +5169,7 @@ const EE_PRESETS = {
   },
   terrain: {
     name: 'terrain & water',
-    ask: 'Is this the mountains-as-built or wetland-as-cropland trap?',
+    ask: 'Is this bare ground being read as built-up, or a wetland as a field?',
     layers: [
       // §AL-T: the "mountains" map error is a BARE GROUND error, not a slope
       // error — the misread rate falls with slope and rises 3.1x on WorldCover
@@ -4747,7 +5363,7 @@ async function eeSignIn(opts) {
     await eeInitialise(CFG.eeProject);
     eeOnConnected('oauth');
     eeStep('starting Earth Engine', 'ok');
-    eeNote('Signed in. These are auxiliary priors — their errors are '
+    eeNote('Signed in. The layers below are second opinions — they go wrong '
       + 'independent of the model you are correcting, which is the only reason '
       + 'they are here.');
     clearTimeout(EE.timer);
@@ -5079,6 +5695,274 @@ function eeOnPointChange(p) {
   eeShowLayer(p);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// The pixel inspector
+//
+// Everything else in the panel is baked AT THE PLOT CENTRE, which is the right
+// default and the wrong instrument for the question an interpreter asks in
+// front of a mixed cell: *that* field, not this one. This reads the same
+// numbers at whatever pixel gets clicked.
+//
+// Four properties it has to keep.
+//
+//   * It is the SAME composite. `s2Chip` is the one definition of the
+//     growing-season median, shared with the filmstrip and the chip ramp, so a
+//     reflectance read here and a colour seen there cannot be two recipes. It
+//     follows that the season is the CLICK's latitude, not the point's -- a
+//     click across the equator from the point is a different window and the
+//     read-out says which one it used.
+//
+//   * It is AT THE CLICK, never at the point. `imagery_a`/`imagery_b` on the
+//     saved row describe the point whatever the interpreter last clicked on;
+//     Wayback's own click read-out already draws that line and this is the same
+//     line for the same reason. Nothing here is written anywhere.
+//
+//   * ONE round trip per click. Both reduceRegions are combined server-side
+//     into a single dictionary and evaluated once, because the measured cost of
+//     Earth Engine here is the request and not the computation (§AL9), and
+//     because two evaluates would land out of order.
+//
+//   * A masked pixel is an ANSWER, not a failure. `dwbuilt`, `obtemporal`,
+//     `hansen`, `dwchg` and the rest are masked differences: no value at a
+//     stable point is the layer saying "nothing here", and it is reported as
+//     that rather than as an error.
+// ════════════════════════════════════════════════════════════════════════════
+
+const INSP = { on: false, gen: 0, at: null };
+
+/** The overlays whose pixel value is a CODE. A raw `4` under a palette is not a
+ *  reading; "crops" is. Keyed by layer because the codes are the layer's, and
+ *  because `esriLc` remaps its own before they are ever painted. */
+const INSP_CODES = {
+  dw18:    v => (DW_CLASSES[v] || [])[0],
+  dw24:    v => (DW_CLASSES[v] || [])[0],
+  dwchg:   v => v ? 'the two years disagree' : 'the two years agree',
+  wc:      v => (WC_CLASSES.find(c => c[0] === v) || [])[1],
+  bare:    v => v ? 'bare / sparse' : 'not bare',
+  esri18:  v => (ESRI_CLASSES[v] || [])[0],
+  esri24:  v => (ESRI_CLASSES[v] || [])[0],
+  esrichg: v => v ? 'the two years disagree' : 'the two years agree',
+  gfc2020: v => v ? 'forest in 2020 (EUDR definition)' : 'not forest'
+};
+
+/** ...and the ones whose value is a quantity. Units, because a bare `1732` off
+ *  GHSL is unreadable and `+1732 m² per 100 m cell` is the whole point. */
+const signed = (v, d, unit) => (v > 0 ? '+' : '') + v.toFixed(d) + ' ' + unit;
+const INSP_UNITS = {
+  hansen:     v => 'cleared in ' + (2000 + Math.round(v)),
+  slope:      v => v.toFixed(1) + '°',
+  water:      v => v.toFixed(0) + '% of months with water',
+  ghsl:       v => signed(v, 0, 'm² per 100 m cell'),
+  dwbuilt:    v => signed(v, 3, 'built probability'),
+  obtemporal: v => signed(v, 3, 'building presence')
+};
+
+function inspMarker(lngLat) {
+  if (!map || !map.getStyle) return;
+  if (!map.getSource('inspect')) {
+    if (!lngLat) return;              // nothing to clear, and no style needed
+    try {
+      map.addSource('inspect', { type: 'geojson', data: emptyFC() });
+      map.addLayer({ id: 'inspect-halo', type: 'circle', source: 'inspect',
+        paint: { 'circle-radius': 8, 'circle-color': 'rgba(0,0,0,0)',
+                 'circle-stroke-width': 2, 'circle-stroke-color': '#22d3ee' } });
+      map.addLayer({ id: 'inspect-dot', type: 'circle', source: 'inspect',
+        paint: { 'circle-radius': 2.2, 'circle-color': '#22d3ee' } });
+    } catch (e) { return; }          // style not up yet; the read-out still works
+  }
+  map.getSource('inspect').setData(lngLat
+    ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {},
+        geometry: { type: 'Point', coordinates: [lngLat.lng, lngLat.lat] } }] }
+    : emptyFC());
+}
+
+function inspClear() {
+  INSP.gen++;                      // any read still in flight is now stale
+  INSP.at = null;
+  inspMarker(null);
+  const out = $('insp-out');
+  if (out) { out.innerHTML = ''; out.style.display = 'none'; }
+}
+
+function inspHead(lat, lon) {
+  return '<div class="insp-head"><b>' + lat.toFixed(5) + ', ' + lon.toFixed(5)
+    + '</b><a href="#" id="insp-clear">clear</a></div>';
+}
+
+function inspBindClear() {
+  const a = $('insp-clear');
+  if (a) a.addEventListener('click', ev => { ev.preventDefault(); inspClear(); });
+}
+
+/** The active overlay's bands at the click, prefixed so they cannot collide
+ *  with the Sentinel-2 keys in the one dictionary both go into. The rename is
+ *  server-side because the band count is not known here. */
+function inspOverlayDict(lat, lon) {
+  const spec = EE_LAYERS[eeActive.key];
+  if (!spec) return null;
+  const p = S.points[S.i];
+  // The layer's own build, but boxed on the CLICK: every one of them clips to
+  // `eeBox`, and a box centred on the point can simply not contain the pixel
+  // that was asked about.
+  let built;
+  try { built = spec.build({ lat, lon, id: 'insp', cell_km: (p && p.cell_km) || 5 }); }
+  catch (e) { return null; }
+  const img = built.image;
+  const named = img.rename(
+    img.bandNames().map(b => ee.String('ov_').cat(ee.String(b))));
+  return named.reduceRegion({
+    reducer: ee.Reducer.first(),
+    geometry: ee.Geometry.Point([lon, lat]),
+    scale: Math.max(parseFloat(spec.res) || 10, 1)
+  });
+}
+
+function inspQuery(lngLat) {
+  const out = $('insp-out');
+  if (!out) return;
+  const lat = lngLat.lat, lon = lngLat.lng;
+  INSP.at = lngLat;
+  inspMarker(lngLat);
+  out.style.display = '';
+  if (!EE.ready) {
+    out.innerHTML = inspHead(lat, lon)
+      + '<div class="insp-none">Earth Engine is not connected — the pixel value '
+      + 'comes from it.</div>';
+    inspBindClear();
+    return;
+  }
+  const gen = ++INSP.gen;
+  const spec = EE_LAYERS[eeActive.key];
+  out.innerHTML = inspHead(lat, lon)
+    + '<div class="insp-wait"><span class="ld">…</span> reading the pixel</div>';
+  inspBindClear();
+
+  let dict;
+  try {
+    const pt = ee.Geometry.Point([lon, lat]);
+    // Big enough that the median has scenes to reduce, small enough that it is
+    // one pixel's worth of work: `s2Chip` filters the collection by this box.
+    const box = pt.buffer(400).bounds();
+    const keys = SPEC_BANDS.map(b => b.key);
+    const year = y => s2Chip({ lat, lon }, y, box, CHIP_SCENE_CAP)
+      .rename(keys.map(k => 'y' + y + '_' + k));
+    dict = ee.Dictionary(ee.Image.cat([year(2018), year(2024)]).reduceRegion({
+      reducer: ee.Reducer.first(), geometry: pt, scale: 10 }));
+    const ov = inspOverlayDict(lat, lon);
+    if (ov) dict = dict.combine(ov, false);
+  } catch (err) {
+    out.innerHTML = inspHead(lat, lon) + '<div class="insp-none">Could not build '
+      + 'the request: ' + esc(String(err && err.message || err)) + '</div>';
+    inspBindClear();
+    return;
+  }
+
+  dict.evaluate((d, failure) => {
+    if (gen !== INSP.gen) { perfCount('stale'); return; }   // newer click, or cleared
+    if (!d) {
+      out.innerHTML = inspHead(lat, lon) + '<div class="insp-none">Earth Engine '
+        + 'returned nothing' + (failure ? ' — ' + esc(String(failure)) : '')
+        + '. ' + eeFailureAdvice(String(failure || ''),
+                                 'It may simply be outside coverage here.')
+        + '</div>';
+      inspBindClear();
+      return;
+    }
+    out.innerHTML = inspHead(lat, lon) + inspSeasonNote(lat)
+      + inspS2Table(d) + inspOverlayHTML(spec, d);
+    inspBindClear();
+  });
+}
+
+function inspSeasonNote(lat) {
+  const s2 = growingSeason(lat);
+  return '<div class="insp-season">growing-season median, ' + esc(s2.name)
+    + ' — cloud-masked, ' + CHIP_SCENE_CAP + ' clearest scenes</div>';
+}
+
+/** Six bands, two years, the difference, and the three indices the chart and
+ *  the chips already speak. The indices are computed HERE from the same six
+ *  numbers rather than asked of Earth Engine separately, so the table cannot
+ *  disagree with itself. */
+function inspS2Table(d) {
+  const got = k => (d[k] == null ? null : Number(d[k]));
+  const rows = SPEC_BANDS.map(b => ({
+    name: b.name, key: b.key,
+    a: got('y2018_' + b.key), c: got('y2024_' + b.key)
+  }));
+  if (!rows.some(r => r.a != null || r.c != null))
+    return '<div class="insp-none">No cloud-free growing-season composite at '
+         + 'this pixel, in either year.</div>';
+  // S2 SR is scaled by 10000, exactly as the baked timeline stores it.
+  const ref = v => v == null ? '<td class="na">—</td>'
+                             : '<td>' + (v / 10000).toFixed(3) + '</td>';
+  const dref = (a, c) => (a == null || c == null) ? '<td class="na">—</td>'
+    : '<td>' + signed((c - a) / 10000, 3, '').trim() + '</td>';
+  const at = k => rows.find(r => r.key === k);
+  const nd = (x, y) => (x == null || y == null || x + y === 0)
+    ? null : (x - y) / (x + y);
+  const idx = Object.entries(CHIP_INDEX).map(([name, spec]) => {
+    const p = at(spec.bands[0]), q = at(spec.bands[1]);
+    const a = nd(p && p.a, q && q.a), c = nd(p && p.c, q && q.c);
+    const f = v => v == null ? '<td class="na">—</td>'
+                             : '<td>' + v.toFixed(3) + '</td>';
+    return '<tr class="idx"><td>' + esc(name) + '</td>' + f(a) + f(c)
+      + ((a == null || c == null) ? '<td class="na">—</td>'
+         : '<td>' + signed(c - a, 3, '').trim() + '</td>') + '</tr>';
+  }).join('');
+  return '<table class="insp"><thead><tr><th>band</th><th>2018</th>'
+    + '<th>2024</th><th>Δ</th></tr></thead><tbody>'
+    + rows.map(r => '<tr><td>' + esc(r.name) + '</td>' + ref(r.a) + ref(r.c)
+                  + dref(r.a, r.c) + '</tr>').join('')
+    + idx + '</tbody></table>';
+}
+
+/** The active overlay, decoded. Every value carries the layer's end year for
+ *  the same reason the legend does: a 2021 dataset asked a 2024 question
+ *  answers 2021. */
+function inspOverlayHTML(spec, d) {
+  if (!spec) return '';
+  const keys = Object.keys(d).filter(k => k.indexOf('ov_') === 0);
+  const said = keys.filter(k => d[k] != null);
+  let body;
+  if (!keys.length) {
+    body = 'nothing came back for this layer here.';
+  } else if (!said.length) {
+    // The masked-difference case, and it is a reading rather than a fault.
+    body = '<span class="ovv">no value</span> — masked here, which for this '
+         + 'layer is its answer, not a gap.';
+  } else {
+    // Keyed off the LAYER THAT WAS READ, not off whatever is active when the
+    // answer lands: switching layers mid-read does not bump `INSP.gen`, and a
+    // Dynamic World code decoded against WorldCover's table is a wrong reading
+    // that looks like a right one.
+    const dec = INSP_CODES[spec.key] || INSP_UNITS[spec.key];
+    body = said.map(k => {
+      const v = Number(d[k]);
+      const say = dec ? dec(v) : null;
+      return '<span class="ovv">' + (say ? esc(String(say)) + ' (' + v + ')'
+                                         : (Math.abs(v) >= 1000 || Number.isInteger(v)
+                                            ? String(v) : v.toFixed(3)))
+        + '</span>';
+    }).join(', ');
+  }
+  return '<div class="insp-ov"><span class="ovl">' + esc(spec.label)
+    + '</span> <span style="color:var(--muted)">· ends ' + spec.end + ' · '
+    + esc(spec.res) + '</span><br>' + body + '</div>';
+}
+
+function initInspector() {
+  const box = $('insp-on');
+  if (!box) return;
+  box.addEventListener('change', () => {
+    INSP.on = box.checked;
+    if (map && map.getCanvas)
+      map.getCanvas().style.cursor = INSP.on ? 'crosshair' : '';
+    if (!INSP.on) inspClear();
+  });
+}
+
+
 function initEE() {
   eeLoadSaved();
   $('ee-project').value = CFG.eeProject || '';
@@ -5155,6 +6039,9 @@ function initEE() {
     if (map && map.getLayer(eeLayerId()))
       map.setPaintProperty(eeLayerId(), 'raster-opacity', e.target.value / 100);
   });
+  // Before the `off` return below: the checkbox has to be inert rather than
+  // unwired in a deployment with no Earth Engine.
+  initInspector();
 
   // ── the campaign account ────────────────────────────────────────────────
   // Nothing is asked of the labeller and nothing waits for a click: a service
@@ -5334,6 +6221,20 @@ function renderEvidenceValues(p) {
       + '</div>';
   }).join('');
   el.querySelectorAll('.ev-seq i').forEach(sw => {
+    // "the sequence is the reading", and it was nine 9x13 px <i> elements with
+    // a click handler -- unreachable by keyboard and under half the minimum
+    // target size in both directions.
+    const y0 = Number(sw.dataset.year);
+    if (y0) {
+      sw.setAttribute('role', 'button');
+      sw.setAttribute('tabindex', '0');
+      if (!sw.getAttribute('aria-label') && sw.title)
+        sw.setAttribute('aria-label', sw.title);
+      sw.addEventListener('keydown', ev => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        ev.preventDefault(); ev.stopPropagation(); selectEvYear(y0);
+      });
+    }
     sw.addEventListener('click', () => {
       const y = Number(sw.dataset.year);
       if (y) selectEvYear(y);
@@ -5603,6 +6504,26 @@ function ensureDense(p) {
   });
 }
 
+/** Four gridlines and their labels down the left of a plot.
+ *
+ *  The evidence chart and the spectral profile emitted this identically, which
+ *  is two definitions of what a tick looks like: change the label precision in
+ *  one and the two plots stacked in the same panel disagree about it. The only
+ *  difference was the range and the value->y function, so those are arguments.
+ */
+function yAxisSVG(lo, hi, toY, geom) {
+  let g = '';
+  for (let k = 0; k <= 3; k++) {
+    const v = lo + (hi - lo) * k / 3, y = toY(v).toFixed(1);
+    g += '<line class="grid" x1="' + geom.ml + '" y1="' + y + '" x2="'
+       + (geom.W - geom.mr) + '" y2="' + y + '"/>'
+       + '<text class="tick" x="' + (geom.ml - 4) + '" y="'
+       + (toY(v) + 3).toFixed(1) + '" text-anchor="end">' + v.toFixed(2)
+       + '</text>';
+  }
+  return g;
+}
+
 function renderEvidenceChart(p) {
   const el = $('ev-chart');
   const t = evTimeline(p);
@@ -5634,14 +6555,7 @@ function renderEvidenceChart(p) {
   const x = y => ml + ((y - y0) / Math.max(1, y1 - y0)) * iw;
   const yp = v => mt + (1 - (v - lo) / (hi - lo)) * ih;
 
-  let g = '';
-  for (let k = 0; k <= 3; k++) {
-    const vv = lo + (hi - lo) * k / 3, yy = yp(vv);
-    g += '<line class="grid" x1="' + ml + '" y1="' + yy.toFixed(1) + '" x2="'
-       + (W - mr) + '" y2="' + yy.toFixed(1) + '"/>'
-       + '<text class="tick" x="' + (ml - 4) + '" y="' + (yy + 3).toFixed(1)
-       + '" text-anchor="end">' + vv.toFixed(2) + '</text>';
-  }
+  let g = yAxisSVG(lo, hi, yp, { W, ml, mr });
   years.forEach(yr => {
     g += '<text class="tick" x="' + x(yr).toFixed(1) + '" y="' + (H - 5)
        + '" text-anchor="middle">' + ("'" + String(yr).slice(2)) + '</text>';
@@ -5658,7 +6572,7 @@ function renderEvidenceChart(p) {
     g += '<line class="ev-cut" x1="' + ml + '" y1="' + yp(0.31).toFixed(1)
        + '" x2="' + (W - mr) + '" y2="' + yp(0.31).toFixed(1) + '"/>'
        + '<text class="ev-cut-lbl" x="' + (W - mr - 2) + '" y="'
-       + (yp(0.31) - 3).toFixed(1) + '" text-anchor="end">veg cut 0.31</text>';
+       + (yp(0.31) - 3).toFixed(1) + '" text-anchor="end">green cover \u2248 0.31</text>';
   }
 
   let d = '', on = false;
@@ -5694,11 +6608,16 @@ function renderEvidenceChart(p) {
     g = '<path class="dense-line" d="' + dd + '"/>' + g;
   }
 
+  // The dot is painted on the ramp of the index it is plotted on, so its
+  // colour and its height are the same number said twice -- the run of dots
+  // reads as the series, and on NDVI the 0.31 cut is a colour boundary as well
+  // as a line. It used to follow the CHIP scheme, which meant that plotting
+  // NDVI over a SWIR/NIR/GREEN filmstrip coloured the dots from three bands
+  // that had nothing to do with the curve drawn through them.
+  const dotCombo = indexComboForSeries(evSeries);
   for (const yr of Object.keys(pos)) {
     const q = pos[yr];
-    // The dot IS the chip: same scheme, same numbers, so a run of years reads
-    // as a strip of colours and the year that changed is the odd colour out.
-    const col = evVisColor(p, t, q.i);
+    const col = evVisColor(p, t, q.i, dotCombo);
     g += '<circle class="ev-dot' + (Number(yr) === evSelYear ? ' sel' : '')
        + '" data-year="' + yr + '" cx="' + q.cx.toFixed(1) + '" cy="'
        + q.cy.toFixed(1) + '" r="4.5"'
@@ -5842,14 +6761,7 @@ function renderSpectral() {
   const xw = wl => ml + (wl - wmin) / (wmax - wmin) * iw;
   const yv = v => mt + (1 - v / 0.6) * ih;    // 0..0.6 covers land reflectance
 
-  let g = '';
-  for (let k = 0; k <= 3; k++) {
-    const vv = 0.6 * k / 3, yy = yv(vv);
-    g += '<line class="grid" x1="' + ml + '" y1="' + yy.toFixed(1) + '" x2="'
-       + (W - mr) + '" y2="' + yy.toFixed(1) + '"/>'
-       + '<text class="tick" x="' + (ml - 4) + '" y="' + (yy + 3).toFixed(1)
-       + '" text-anchor="end">' + vv.toFixed(2) + '</text>';
-  }
+  let g = yAxisSVG(0, 0.6, yv, { W, ml, mr });
   SPEC_BANDS.forEach(b => {
     const bx = xw(b.wl);
     g += '<line class="grid" x1="' + bx.toFixed(1) + '" y1="' + mt + '" x2="'
@@ -5976,7 +6888,7 @@ const CHIP_RGB = {
 //: recipe to drift.
 const CHIP_INDEX = {
   'NDVI': { bands: ['B8', 'B4'],  min: 0.0,  max: 0.9, series: 'ndvi',
-    tip: 'Greenness. The ledger’s vegetation cut is on this, at 0.31.' },
+    tip: 'Greenness. The dashed line at 0.31 is roughly where bare or built ground ends and green cover begins — fitted on this project’s own plots, and only a rough guide (it separates them about two times in three).' },
   'NDMI': { bands: ['B8', 'B11'], min: -0.2, max: 0.6, series: 'ndmi',
     tip: 'Moisture. Irrigation and wet-season cropping show here first.' },
   'NBR':  { bands: ['B8', 'B12'], min: 0.0,  max: 0.8, series: 'nbr',
@@ -5985,6 +6897,12 @@ const CHIP_INDEX = {
 const INDEX_RAMP = ['#7c4a13', '#b8860b', '#e6d200', '#9acd32', '#3f9e3f', '#0b6b2e'];
 
 function chipIsIndex(combo) { return combo in CHIP_INDEX; }
+
+/** The CHIP_INDEX key whose `series` is the one on the chart right now. */
+function indexComboForSeries(series) {
+  return Object.keys(CHIP_INDEX)
+    .find(k => CHIP_INDEX[k].series === (series || evSeries)) || null;
+}
 function chipSpec(combo) {
   return CHIP_INDEX[combo] || CHIP_RGB[combo] || CHIP_RGB['SWIR1/NIR/GREEN'];
 }
@@ -6051,6 +6969,55 @@ function comboBounds(p, combo) {
   return { bands: spec.bands, min: lo, max: hi, tip: spec.tip };
 }
 
+//: Below this the widest of the three bands gets fewer than ~50 of 255 levels
+//: and a cell reads as a solid block. Measured on b001: 7 points of 99, of
+//: which 3 are under 6% and are the ones people report.
+const CHIP_FLAT_USE = 0.20;
+
+/** Why this point's strip is flat, when it is flat ON PURPOSE — or null.
+ *
+ *  §AL10 ships ONE affine transform shared by the three channels: `lo` is the
+ *  darkest of their floors and `hi` the brightest of their ceilings. The cost
+ *  of that choice is exactly this. At a point where the three bands sit at very
+ *  different levels — bright bare ground runs SWIR1 ~6600, NIR ~4900, GREEN
+ *  ~2800 — the shared ramp is ~4000 DN wide while each band's own p2–p98 spread
+ *  is ~140, so the widest band uses 3.5% of the ramp and nine years bake as
+ *  nine identical orange squares. On b001 that is p0022, p0040 and p0065.
+ *
+ *  That is the correct picture of a uniform desert, and on screen it is
+ *  indistinguishable from the bake having failed — which is the one confusion
+ *  §AL9's `chipBakeMiss` and §AL10's re-bake were between them meant to end.
+ *  The numbers are already in the batch, so say it.
+ *
+ *  DO NOT "fix" this by narrowing the ramp. Per-band bounds are a decorrelation
+ *  stretch: they move hue, and hue here is a convention the legend teaches. A
+ *  narrow ramp of any kind turns the few hundred DN of ordinary atmospheric
+ *  drift between two years into a full-scale colour swing — p0022 cycled
+ *  yellow / brown / white / black / teal / orange / blue across nine unchanging
+ *  years — and a filmstrip that manufactures change is worse than one that is
+ *  flat. Both are tested-negative in §AL10; this note is the alternative. */
+function chipFlatNote(p) {
+  if (chipIsIndex(chipVis.combo)) return null;
+  const st = chipStretch(p);
+  if (!st) return null;
+  const bd = comboBounds(p, chipVis.combo);
+  const span = bd.max - bd.min;
+  if (!(span > 0)) return null;
+  const widest = Math.max(...bd.bands.map(k => (st[k] ? st[k][1] - st[k][0] : 0)));
+  if (!(widest > 0) || widest / span > CHIP_FLAT_USE) return null;
+  return 'These pictures are all one colour because <b>the ground is</b>, not '
+    + 'because they failed to load. Across all nine years the brightness here '
+    + 'covers only ' + Math.round(widest / span * 100) + '% of the range they '
+    + 'are drawn through. Somewhere uniform — desert, bare rock, open water — '
+    + 'genuinely looks like this, and stretching the contrast to fill the frame '
+    + 'would invent year-to-year change that is not there.';
+}
+
+function chipFlatHTML(p) {
+  const why = chipFlatNote(p);
+  return why ? '<div class="chip-off calm">' + why + '</div>' : '';
+}
+
 /** What year `i` of this point's timeline looks like under the current scheme,
  *  mixed from the BAKED reflectance the batch already carries.
  *
@@ -6065,14 +7032,24 @@ function comboBounds(p, combo) {
  *
  *  Returns null where the year has no cloud-free composite, which the callers
  *  render as an empty dot rather than as a colour. */
-function evVisColor(p, t, i) {
+/** The colour a year's cell would be under `combo`, from the baked bands.
+ *
+ *  `combo` is an argument rather than always `chipVis.combo` because the strip
+ *  and the chart are answering two different questions with it: a chip cell is
+ *  a preview of the chip, so it follows the vis scheme; a chart dot is a
+ *  reading of the series under it, so it follows the index being plotted. They
+ *  were the same setting, so plotting NDVI while the strip was on SWIR/NIR/GREEN
+ *  gave a row of dots whose colour had nothing to do with the line through them.
+ */
+function evVisColor(p, t, i, combo) {
   if (!t || !t.bands) return null;
-  const spec = comboBounds(p, chipVis.combo);
+  combo = combo || chipVis.combo;
+  const spec = comboBounds(p, combo);
   const at = k => {
     const v = (t.bands[k] || [])[i];
     return (v === null || v === undefined) ? null : Number(v);
   };
-  if (chipIsIndex(chipVis.combo)) {
+  if (chipIsIndex(combo)) {
     const a = at(spec.bands[0]), b = at(spec.bands[1]);
     if (a === null || b === null || (a + b) === 0) return null;
     return rampColor(INDEX_RAMP,
@@ -6101,6 +7078,30 @@ if (!CHIP_RGB[chipVis.combo] && !CHIP_INDEX[chipVis.combo])
 function saveChipVis() {
   try { localStorage.setItem(CHIP_STORE, JSON.stringify(chipVis)); }
   catch (e) { /* private mode */ }
+}
+
+/** A remembered width that disables the bake must not outlive the batch it was
+ *  set in.
+ *
+ *  `chipVis.w` is persisted, and the sprite path requires it to equal the
+ *  bake's width EXACTLY. So one nudge of the width slider disables every baked
+ *  chip in every batch, for that browser, across reloads -- and from then on
+ *  every point opens as nine flat tints and stays that way until Earth Engine
+ *  answers, or forever for somebody not signed in. Measured: nudge it once,
+ *  step to the next point, reload, and the strip is still flat. The note under
+ *  the strip names the condition and offers the width back, and a person who
+ *  moved that slider three points ago has stopped reading it.
+ *
+ *  Width is a VIEW preference; the bake is the instrument. Opening a batch that
+ *  has one snaps to it. Dragging the slider still works and still drops to live
+ *  Earth Engine for as long as the interpreter wants it -- what it no longer
+ *  does is follow them into the next batch or the next morning. */
+function snapChipWidthToBake() {
+  const b = chipBake();
+  if (!b || !Number(b.width_m) || Number(chipVis.w) === Number(b.width_m)) return;
+  chipVis.w = Number(b.width_m);
+  saveChipVis();
+  if ($('ev-chip-controls')) buildChipControls();
 }
 
 //: Bumped on every point change so a chip that arrives late for the previous
@@ -6190,16 +7191,16 @@ function chipBakeMiss(p) {
   const b = S.batch && S.batch.chips;
   if (!b) return null;                              // no bake: nothing to say
   if (b.version !== CHIP_BAKE_VERSION)
-    return 'the bake is ' + b.version + ' and this app reads '
-         + CHIP_BAKE_VERSION + ' — re-run build_batch_chips.py';
+    return 'they were prepared by an older version of the tool (' + b.version
+         + ', this app reads ' + CHIP_BAKE_VERSION + ') and need re-making';
   if (!S.batchUrl)
     return 'this batch was opened as a file, so there is no folder to look in';
   if (!Array.isArray(b.combos) || b.combos.indexOf(chipVis.combo) < 0)
-    return chipVis.combo + ' is not baked (' + (b.combos || []).join(', ')
-         + ' are)';
+    return chipVis.combo + ' was not one of the views prepared in advance ('
+         + (b.combos || []).join(', ') + ' were)';
   if (Number(b.width_m) !== Number(chipVis.w))
-    return 'the bake is ' + b.width_m + ' m and the width is set to '
-         + chipVis.w + ' m';
+    return 'they were prepared ' + b.width_m + ' m across and the width is set '
+         + 'to ' + chipVis.w + ' m';
   return null;
 }
 
@@ -6242,6 +7243,8 @@ function paintSprite(strip, url, n) {
       const b = document.createElement('button');
       b.className = 'chip-zoom';
       b.title = 'Enlarge (←/→ step years)';
+      b.setAttribute('aria-label',
+        'Enlarge the ' + cell.dataset.year + ' chip');
       b.textContent = '⤢';
       b.addEventListener('click', ev => {
         ev.stopPropagation(); openLightbox(Number(cell.dataset.year));
@@ -6375,19 +7378,30 @@ function renderChips(p) {
   strip.innerHTML = years.map((y, i) => {
     const col = evVisColor(p, t, i);
     const none = known && !col;
+    const lbl = String(y)
+      + (none ? ' — no cloud-free composite in the growing season' : '');
     return '<div class="chip' + (col ? ' tinted' : '') + (none ? ' nodata' : '')
-      + '" data-year="' + y + '"'
+      + '" data-year="' + y + '" role="button" tabindex="0"'
       + (col ? ' style="background:' + col + '"' : '')
-      + ' title="' + esc(String(y)
-          + (none ? ' — no cloud-free composite in the growing season' : ''))
-      + '"><span class="yr">' + y + '</span>'
+      + ' aria-label="' + esc('Sentinel-2 ' + lbl) + '"'
+      + ' title="' + esc(lbl)
+      + '"><span class="yr" aria-hidden="true">' + y + '</span>'
       + (none ? '' : '<span class="ld"></span>') + '</div>';
   }).join('');
   strip.querySelectorAll('.chip').forEach(c => {
     c.addEventListener('click', () => selectEvYear(Number(c.dataset.year)));
     c.addEventListener('dblclick', () => openLightbox(Number(c.dataset.year)));
+    // Enter selects the year the way a click does; the enlarge is on the ⤢
+    // button inside the cell, which is a real button and now Tab-reachable.
+    c.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter' && ev.key !== ' ') return;
+      ev.preventDefault(); ev.stopPropagation();
+      selectEvYear(Number(c.dataset.year));
+    });
   });
-  $('ev-strip-note').innerHTML = '';
+  // A flat strip that is flat on purpose says so on BOTH paths, so it is set
+  // here and `liveChips` starts its own note from the same string.
+  $('ev-strip-note').innerHTML = chipFlatHTML(p);
 
   // The baked sprite first, and it is not a fallback: where it exists this is
   // the whole of the work, one static file and no Earth Engine. A 404 or a
@@ -6425,14 +7439,26 @@ function liveChips(p, years, gen, why) {
   const miss = why || chipBakeMiss(p);
   const wrong = Number(((S.batch && S.batch.chips) || {}).width_m);
   const canFix = miss && wrong && wrong !== Number(chipVis.w);
-  let note = '';
+  let note = chipFlatHTML(p);
   // A bake that exists and is not being used says so, and says which of the
   // conditions it failed. Silent fallback is correct and unreadable at the same
   // time: the strip reverts to flat tints, and "the chips are one colour" is
   // then a question nobody on this side of the screen can answer.
-  if (miss)
-    note += '<div class="chip-off">Baked chips are not being used: ' + esc(miss)
-         + '. Falling back to live Earth Engine.'
+  // An index scheme reaching this point is not a bake that failed -- index
+  // schemes are NEVER baked, on purpose (§AL10: one normalised difference
+  // through a ramp does not clip and is cheap live). Reported as a bake miss it
+  // reads as a fault, and the interpreter's next move is to go looking for the
+  // broken thing rather than to wait the few seconds it actually costs.
+  if (miss && !why && chipIsIndex(chipVis.combo))
+    note += '<div class="chip-off calm"><b>' + esc(chipVis.combo) + '</b> '
+         + 'pictures are always drawn fresh rather than prepared in advance, so '
+         + 'they take a few seconds each. The colours below are this point\u2019s '
+         + esc(chipVis.combo) + ' already — the same numbers the chart plots — '
+         + 'so the sequence is readable while they arrive.</div>';
+  else if (miss)
+    note += '<div class="chip-off">The prepared pictures are not being used: '
+         + esc(miss) + '. Drawing them fresh from Earth Engine instead, which is '
+         + 'slower.'
          + (canFix ? ' <button id="chip-usebake">Use ' + wrong + ' m</button>'
                    : '')
          + '</div>';
@@ -6442,11 +7468,22 @@ function liveChips(p, years, gen, why) {
   // evidence the app already had in hand in order to report a missing
   // connection. Its own element, not a member of the strip: inside the strip
   // it was a tenth flex item and pushed the ninth year off the scroll.
+  // "Connect" is the WRONG ask on a service-account deployment, and it was the
+  // first thing on screen: the campaign account takes a few seconds to come up,
+  // and for those seconds every labeller was being told to sign in to Google
+  // for a campaign designed so that nobody ever does. Offer the button only
+  // where a personal sign-in is actually what this deployment runs on.
   if (!EE.ready)
-    note += '<div class="chip-off">Colours are this point’s baked '
-         + 'reflectance. The images themselves need Earth Engine — everything '
-         + 'else on this page works without it. '
-         + '<button id="chip-connect">Connect</button></div>';
+    note += '<div class="chip-off' + (eeServiceWanted() ? ' calm' : '') + '">'
+         + 'The colours below are measured at this point and are ready now. '
+         + 'The photographs are still loading'
+         + (eeServiceWanted()
+            ? ' — the shared campaign account is starting up, which takes a few '
+              + 'seconds on the first point. Nothing for you to do.'
+            : ', and they are the one thing on this page that needs a Google '
+              + 'sign-in. '
+              + '<button id="chip-connect">Sign in</button>')
+         + '</div>';
 
   $('ev-strip-note').innerHTML = note;
   const bw = $('chip-usebake');
@@ -6485,7 +7522,8 @@ function loadOneChip(p, year, gen) {
   const fail = why => {
     if (gen !== chipGen) return;
     cell.innerHTML = '<span class="yr">' + year + '</span>'
-      + '<button class="chip-retry" title="' + esc(why) + ' — click to retry">↻</button>';
+      + '<button class="chip-retry" aria-label="Retry this chip" title="'
+      + esc(why) + ' — click to retry">↻</button>';
     const b = cell.querySelector('.chip-retry');
     if (b) b.addEventListener('click', ev => {
       ev.stopPropagation();
@@ -6509,7 +7547,8 @@ function loadOneChip(p, year, gen) {
         if (done || gen !== chipGen) return;
         done = true; clearTimeout(timer);
         cell.innerHTML = '<span class="yr">' + year + '</span>'
-          + '<button class="chip-zoom" title="Enlarge (←/→ step years)">⤢</button>';
+          + '<button class="chip-zoom" aria-label="Enlarge this chip"'
+          + ' title="Enlarge (←/→ step years)">⤢</button>';
         cell.insertBefore(img, cell.firstChild);
         cell.querySelector('.chip-zoom').addEventListener('click', ev => {
           ev.stopPropagation(); openLightbox(year);
@@ -6556,7 +7595,7 @@ function buildChipControls() {
   const opt = k => '<option value="' + esc(k) + '" title="'
     + esc(chipSpec(k).tip) + '"' + (k === chipVis.combo ? ' selected' : '')
     + '>' + esc(k) + '</option>';
-  el.innerHTML = '<select id="chip-combo" title="What the chips show. An index '
+  el.innerHTML = '<select id="chip-combo" title="Which bands the yearly pictures are drawn from. Picking an index '
     + 'also colours the chart dots and becomes the plotted series.">'
     + '<optgroup label="three-band">'
     + Object.keys(CHIP_RGB).map(opt).join('') + '</optgroup>'
@@ -6596,14 +7635,31 @@ function lightboxOpen() {
   return !!(el && el.classList.contains('on'));
 }
 
+let lbReturnFocus = null;
 function openLightbox(year) {
   const p = S.points[S.i];
   if (!p) return;
   lbPoint = p;
   lbYears = evYears();
   lbIdx = Math.max(0, lbYears.indexOf(year));
+  // Where the keyboard was, so closing puts it back on the chip it came from
+  // rather than at the top of the document.
+  lbReturnFocus = document.activeElement;
   $('lightbox').classList.add('on');
   renderLightbox();
+  // The panel stays visible beside the chip, so the readings the lightbox
+  // drives have to be the part of it that is showing -- otherwise this depends
+  // on wherever the interpreter happened to leave the scroller.
+  // The CHART is the scroll target, not the top of the evidence block: the
+  // block starts with the spectral profile and the chart is what falls off the
+  // bottom. `end` puts it against the foot with the profile above it, so both
+  // readings are on screen.
+  document.body.classList.add('lb-open');
+  const ev = $('ev-chart');
+  if (ev && $('sec-evidence').style.display !== 'none')
+    ev.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  const close = $('lb-close');
+  if (close) close.focus();
 }
 
 function renderLightbox() {
@@ -6660,7 +7716,13 @@ function lbStep(delta) {
   renderLightbox();
 }
 
-function closeLightbox() { $('lightbox').classList.remove('on'); }
+function closeLightbox() {
+  $('lightbox').classList.remove('on');
+  document.body.classList.remove('lb-open');
+  const back = lbReturnFocus;
+  lbReturnFocus = null;
+  if (back && back.isConnected && back.offsetParent !== null) back.focus();
+}
 
 function initLightbox() {
   const lb = $('lightbox');
@@ -6669,6 +7731,17 @@ function initLightbox() {
   $('lb-next').addEventListener('click', () => lbStep(1));
   $('lb-close').addEventListener('click', closeLightbox);
   lb.addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
+  // A modal that lets Tab walk out into the page behind it is a modal in
+  // appearance only. Four controls, so the cycle is written out rather than
+  // computed.
+  lb.addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const stops = [...lb.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+    if (!stops.length) return;
+    const first = stops[0], last = stops[stops.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
   buildEvidenceControls();
   buildChipControls();
 }
@@ -6843,6 +7916,45 @@ function inField(e) {
                t.tagName === 'SELECT' || t.isContentEditable);
 }
 
+/** Which modality last put the focus where it is.
+ *
+ *  NOT `:focus-visible`, which is the obvious answer and the wrong one. Chromium
+ *  flips it TRUE the moment a key arrives at the focused element, so asking at
+ *  keydown time says "keyboard" about a button the mouse clicked -- and the
+ *  measured consequence was that clicking a change-year and pressing Enter
+ *  re-toggled the year off instead of saving the point. Tab is the only thing in
+ *  this app that moves focus onto a control by keyboard, so tracking Tab is both
+ *  exact and stable across browsers. Capture phase, so it is recorded before any
+ *  handler can stop the event.
+ */
+let focusFromKeyboard = false;
+window.addEventListener('pointerdown', () => { focusFromKeyboard = false; }, true);
+window.addEventListener('keydown', e => {
+  if (e.key === 'Tab') focusFromKeyboard = true;
+}, true);
+
+/** Is a button/link/summary sitting under a KEYBOARD focus right now?
+ *
+ *  This handler is on `window` and `inField` never named BUTTON, so Enter and
+ *  Space were `preventDefault`ed out from under every button in the app: Tab to
+ *  *Defer*, press Enter, and the point was SAVED instead. Every button was
+ *  reachable by Tab and none of them was pressable.
+ *
+ *  The modality test is what keeps that fix from costing anything the other
+ *  way: a mouse user who has just clicked *Defer* must not find that their next
+ *  Enter re-presses it rather than saving.
+ */
+function keyOwnedByControl() {
+  if (!focusFromKeyboard) return false;
+  const t = document.activeElement;
+  if (!t || t === document.body || t.disabled) return false;
+  if (!t.matches || !t.matches('button, summary, a[href], [role="button"]'))
+    return false;
+  // A control hidden out from under the focus still holds `activeElement` -- the
+  // identity gate's Start button does exactly this -- and must not keep the key.
+  return !!(t.offsetWidth || t.offsetHeight || t.getClientRects().length);
+}
+
 // Hold space to flicker the swipe to the B side. Blink comparison is the oldest
 // change-detection instrument there is and it beats a static divider for
 // spotting a new building or a cleared field — the divider tells you the two
@@ -6871,13 +7983,24 @@ function flickerOff() {
 
 function initKeys() {
   window.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { document.activeElement.blur(); hideLoading(); return; }
     // The chip lightbox owns ←/→/Esc while it is up. Point navigation is on the
     // same two keys, and stepping to the next point while looking at an
     // enlarged 2019 chip is not what anybody meant.
+    //
+    // Esc used to be handled ABOVE this block and `return`ed, so it never
+    // reached it: the close button advertised `title="Esc"` and Esc did not
+    // close the lightbox. It also called `hideLoading()` unconditionally, which
+    // dismissed the identity gate -- and a dismissed gate puts the app straight
+    // back into the after-the-fact nag the gate replaced.
     if (lightboxOpen()) {
+      if (e.key === 'Escape')     { e.preventDefault(); closeLightbox(); return; }
       if (e.key === 'ArrowLeft')  { e.preventDefault(); lbStep(-1); return; }
       if (e.key === 'ArrowRight') { e.preventDefault(); lbStep(1); return; }
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (document.activeElement) document.activeElement.blur();
+      if (!loadingBlocks()) hideLoading();
       return;
     }
     if (inField(e)) {
@@ -6888,6 +8011,9 @@ function initKeys() {
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // Enter and Space belong to whatever the keyboard is focused on, if
+    // anything. Everything else stays an app-wide hotkey.
+    if ((e.key === 'Enter' || e.key === ' ') && keyOwnedByControl()) return;
     const k = e.key.toLowerCase();
     const c18 = CLASSES.find(c => c.k.toLowerCase() === k);
     const c24 = CLASSES.find(c => c.k2.toLowerCase() === k);
@@ -6918,6 +8044,7 @@ function setCard(id, open) {
   const head = document.querySelector('[data-toggle="' + id + '"]');
   body.style.display = open ? '' : 'none';
   head.querySelector('.caret').textContent = open ? '▾' : '▸';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
   try { localStorage.setItem('recover-labels:card:' + id, open ? '1' : '0'); }
   catch (e) { /* private mode */ }
 }
@@ -6950,7 +8077,7 @@ function initChrome() {
   window.addEventListener('pointermove', e => {
     if (!dragging) return;
     pendingW = Math.max(280, Math.min(620, window.innerWidth - e.clientX));
-    panel.style.setProperty('--panel-w', pendingW + 'px');
+    document.documentElement.style.setProperty('--panel-w', pendingW + 'px');
     if (!raf) raf = requestAnimationFrame(() => {
       raf = 0;
       if (map) map.resize();
@@ -6967,7 +8094,7 @@ function initChrome() {
     }
   });
   const saved = localStorage.getItem('recover-labels:panel-w');
-  if (saved) panel.style.setProperty('--panel-w', saved + 'px');
+  if (saved) document.documentElement.style.setProperty('--panel-w', saved + 'px');
 
   // ── who is labelling ──────────────────────────────────────────────────────
   Expert.restore();
@@ -7001,10 +8128,17 @@ function initChrome() {
 
   $('btn-save').addEventListener('click', () => saveCurrent());
   $('btn-skip').addEventListener('click', () => deferCurrent());
-  $('btn-export').addEventListener('click', exportBatch);
+  $('btn-export').addEventListener('click', () => {
+    const n = Object.keys(S.labels).length;
+    exportBatch();
+    // On a browser set to save without asking, the whole interaction was
+    // invisible. Same toast the save path already uses.
+    toast('exported <b>' + n + '</b> row' + (n === 1 ? '' : 's'));
+  });
   $('btn-help').addEventListener('click', () => showIntro(null));
   $('btn-sync').addEventListener('click', () => { syncBackoff = 2000; syncNow(); });
   $('pill-sync').addEventListener('click', explainSync);
+  $('pill-sync').title = 'Sync status — open for the last error and the endpoint';
   $('q-mine').addEventListener('click', () => setQueue('mine'));
   $('q-second').addEventListener('click', () => setQueue('second'));
   $('batch-load').addEventListener('click', async () => {
@@ -7110,10 +8244,8 @@ function showBatchPicker(reason) {
   const row = b => {
     const n = (b.assigned && b.assigned[id]) || 0;
     const mine = n > 0 || (b.assigned_to && String(b.assigned_to) === id);
-    return '<button onclick="hideLoading();openBatchFile(\'' + esc(b.file) + '\')" '
-      + 'style="display:block;width:100%;text-align:left;margin:3px 0;padding:7px 10px;'
-      + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:12.5px;'
-      + (mine ? '' : 'opacity:.5;') + '">'
+    return '<button class="pick' + (mine ? '' : ' dim')
+      + '" data-act="batch" data-arg="' + esc(b.file) + '">'
       + '<b>' + esc(b.batch_id || b.file) + '</b>'
       + (b.n ? ' · ' + b.n + ' points' : '')
       + (b.channel ? ' · ' + esc(b.channel) : '')
@@ -7128,9 +8260,8 @@ function showBatchPicker(reason) {
   });
   setLoading('Pick a batch', '<div class="sub left"><p>' + esc(reason || '')
     + '</p></div>' + sorted.map(row).join('')
-    + '<br><button onclick="hideLoading()" style="padding:7px 16px;'
-    + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:13px">'
-    + 'continue anyway</button>');
+    + '<div class="go-row"><button class="go secondary" '
+    + 'data-act="close">continue anyway</button></div>');
 }
 
 async function openBatchFile(file) {
@@ -7141,6 +8272,7 @@ async function openBatchFile(file) {
 async function boot() {
   buildChoices();
   initChrome();
+  initLoadingActions();
   initKeys();
   initDrop();
   initEE();
@@ -7165,10 +8297,9 @@ async function boot() {
     setLoading('No batch loaded', 'Pick one from the <b>Batch</b> card, drop a '
       + '<code>.json</code> / <code>.csv</code> / <code>.geojson</code> file on '
       + 'this window, or open the app with <code>?batch=&lt;url&gt;</code>.'
-      + '<br><br><span style="color:#98a2b3">' + esc(err.message) + '</span>'
-      + '<br><br><button onclick="hideLoading()" style="padding:7px 16px;'
-      + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:13px">'
-      + 'continue anyway</button>');
+      + '<br><br><span style="color:var(--muted)">' + esc(err.message) + '</span>'
+      + '<div class="go-row"><button class="go secondary" '
+      + 'data-act="close">continue anyway</button></div>');
   }
   if (Outbox.size()) queueSync();
   // The README calls the swipe "the instrument" and it stalled on first use each
@@ -7192,9 +8323,8 @@ setTimeout(() => {
     setLoading('Still starting',
       'The batch manifest has not answered. Check network access, pick a batch '
       + 'from the <b>Batch</b> card, or drop a batch file on this window.'
-      + '<br><br><button onclick="hideLoading()" style="padding:7px 16px;'
-      + 'border-radius:6px;border:1px solid #ccc;cursor:pointer;font-size:13px">'
-      + 'continue anyway</button>');
+      + '<div class="go-row"><button class="go secondary" '
+      + 'data-act="close">continue anyway</button></div>');
   }
 }, 15000);
 </script>

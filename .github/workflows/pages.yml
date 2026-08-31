@@ -54,6 +54,37 @@ jobs:
           grep -q 'LABEL_APP_CONFIG' app/config.js \
             || { echo "::error::the secret does not set window.LABEL_APP_CONFIG"; exit 1; }
 
+      # The auxiliary overlays are served on the CAMPAIGN's Earth Engine
+      # account -- that is the whole point of `Code.gs`'s token broker -- and
+      # `eeAuthMode: 'auto'|'service'` with no `sheetUrl`/`eeTokenUrl` has
+      # nothing to mint from. It deploys an app that looks configured and hands
+      # every labeller a Google sign-in for layers they cannot reach, which is
+      # the same class of silent failure as the missing secret above.
+      - name: Check Earth Engine will run on the campaign account
+        run: |
+          node -e '
+            global.window = {};
+            require("./app/config.js");
+            const c = window.LABEL_APP_CONFIG || {};
+            const mode = c.eeAuthMode || "auto";
+            const broker = c.eeTokenUrl || c.sheetUrl || "";
+            if (mode === "oauth" || mode === "off") {
+              console.log("::warning::eeAuthMode is " + mode + ": labellers "
+                + "will be asked to sign in to Google for the auxiliary "
+                + "overlays, and an unregistered Pages origin fails silently. "
+                + "This campaign wants eeAuthMode: \"service\".");
+            } else if (!broker) {
+              console.log("::error::eeAuthMode is " + mode + " but the config "
+                + "sets neither sheetUrl nor eeTokenUrl, so there is nothing "
+                + "to mint a service-account token from: the Earth Engine "
+                + "overlays will not draw and the panel will offer a sign-in "
+                + "button instead.");
+              process.exit(1);
+            } else {
+              console.log("Earth Engine: " + mode + " on the deployment account.");
+            }
+          '
+
       # The chips and the dense series are BAKED sidecars, and a batch deployed
       # without them silently falls back to live Earth Engine -- or, with nobody
       # signed in, to flat colour swatches. That is the failure this campaign
