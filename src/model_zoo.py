@@ -25,6 +25,7 @@ script runs to completion on a partial environment.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import time
 import warnings
@@ -247,23 +248,68 @@ def class_weights(target: np.ndarray, n_classes: int, mode: str) -> np.ndarray:
     return w.astype("float32")
 
 
-def level_loss(probs, target, mode: str, weight=None, gamma: float = 2.0):
+def level_loss(probs, target, mode: str, weight=None, gamma: float = 2.0, *,
+               reduce: bool = True, robust: str = "none", robust_q: float = 0.7,
+               robust_alpha: float = 0.1, robust_beta: float = 1.0,
+               robust_a: float = -4.0):
     """Cross-entropy or focal loss taken over already-aggregated probabilities.
 
     The hierarchical model reads its coarse levels off group-summed softmax
     probabilities, not raw logits, so the loss is built from ``probs`` directly:
     ``-log p_t`` for cross-entropy, ``-(1 - p_t)^gamma log p_t`` for focal.
     ``weight`` (per class) multiplies the per-sample loss when supplied.
+
+    ``reduce=False`` returns the per-sample vector instead of its mean, which is
+    what a sample-selection method (co-teaching) needs and what nothing in this
+    file needed before section T.
+
+    ``robust`` swaps the **core** ``-log p_t`` for a bounded surrogate from the
+    learning-with-noisy-labels literature, all of which need no estimate of the
+    noise rate:
+
+    * ``gce`` -- generalised cross-entropy ``(1 - p_t^q) / q`` (Zhang & Sabuncu
+      2018). ``q -> 0`` is CE, ``q = 1`` is unhulled MAE; ``q = 0.7`` is the
+      paper's default and interpolates between CE's convergence and MAE's
+      noise-robustness.
+    * ``sce`` -- symmetric cross-entropy ``alpha*CE + beta*RCE`` (Wang et al.
+      2019), with reverse CE ``-A * (1 - p_t)`` for the one-hot label under the
+      convention ``log 0 = A``.
+    * ``boot_hard`` / ``boot_soft`` -- bootstrapping (Reed et al. 2015): mix the
+      given label with the model's own arg-max (hard) or full posterior (soft)
+      at weight ``1 - robust_beta``.
+
+    **The focal modulation is dropped whenever a robust core is in use**, and
+    that is deliberate rather than an omission. ``(1 - p_t)^gamma`` upweights
+    exactly the high-loss samples every one of these surrogates exists to bound,
+    so composing them would cancel the mechanism under test. It also means the
+    matched reference for a robust arm is the ``loss='ce'`` recipe, not the
+    ``loss='focal'`` one.
     """
     import torch
 
     pt = probs.gather(1, target[:, None]).squeeze(1).clamp_min(1e-8)
-    loss = -pt.log()
-    if mode in ("focal", "cb_focal"):
-        loss = ((1.0 - pt) ** gamma) * loss
+    if robust == "none":
+        loss = -pt.log()
+        if mode in ("focal", "cb_focal"):
+            loss = ((1.0 - pt) ** gamma) * loss
+    elif robust == "gce":
+        loss = (1.0 - pt.pow(robust_q)) / robust_q
+    elif robust == "sce":
+        loss = robust_alpha * (-pt.log()) + robust_beta * (-robust_a) * (1.0 - pt)
+    elif robust in ("boot_hard", "boot_soft"):
+        p = probs.clamp_min(1e-8)
+        if robust == "boot_hard":
+            # Detached so the target is the model's current belief, not a path
+            # the gradient can move to make itself right.
+            extra = -p.log().gather(1, p.detach().argmax(1)[:, None]).squeeze(1)
+        else:
+            extra = -(p.detach() * p.log()).sum(1)
+        loss = robust_beta * (-pt.log()) + (1.0 - robust_beta) * extra
+    else:
+        raise ValueError(f"Unknown robust loss: {robust}")
     if weight is not None:
         loss = loss * weight[target]
-    return loss.mean()
+    return loss.mean() if reduce else loss
 
 
 def scores(truth, predicted, is_change_fn) -> dict:
@@ -1085,7 +1131,47 @@ class HierarchicalSoftmaxNN:
                  tess_width: float = 1.0, align_weight: float = 0.0,
                  align_temperature: float = 0.1,
                  distill_weight: float = 0.0, distill_temperature: float = 1.0,
-                 endpoint_weight: float = 0.0):
+                 endpoint_weight: float = 0.0,
+                 siam_columns_18=None, siam_columns_24=None,
+                 siam_extra_columns=None, siam_dim: int = 128,
+                 siam_combine: str = "conc", siam_year_adapter: str = "none",
+                 siam_crfe: str = "none", siam_pyramid: bool = False,
+                 siam_fiim: str = "none", siam_hidden=(512, 256),
+                 deep_sup_weight: float = 0.0,
+                 dice_weight: float = 0.0, dice_level: str = "gate",
+                 set_ce_weight: float = 0.0, set_ce_level: str = "fine",
+                 set_ce_alpha: float = 0.10, set_ce_random: bool = False,
+                 robust_loss: str = "none", robust_q: float = 0.7,
+                 robust_alpha: float = 0.1, robust_beta: float = 1.0,
+                 robust_a: float = -4.0, robust_levels: str = "all",
+                 cb_levels: str = "all",
+                 elr_weight: float = 0.0, elr_beta: float = 0.7,
+                 coteach: str = "off", coteach_forget: float = 0.10,
+                 coteach_warmup: int = 10, coteach_ramp: int = 10,
+                 coteach_level: str = "fine", coteach_beta_a: float = 32.0,
+                 coteach_beta_b: float = 2.0, coteach_min_keep: float = 0.10,
+                 coteach_thresh_per: str = "batch",
+                 coteach_stratify: bool = False,
+                 siam_cos_weight: float = 0.0,
+                 siam_cos_margin: float = 0.0,
+                 siam_cos_stable_margin: float = 0.0,
+                 siam_mssm_weight: float = 0.0, siam_mssm_scales: str = "stages",
+                 siam_mssm_metric: str = "cos",
+                 siam_mssm_margin: float | None = None,
+                 siam_mssm_stable_margin: float = 0.0,
+                 siam_barlow_weight: float = 0.0,
+                 siam_barlow_lambda: float = 0.005,
+                 siam_unlabelled_weight: float = 0.0,
+                 siam_unlabelled_batch: int = 4096,
+                 siam_state_weight: float = 0.0,
+                 siam_state_source: str = "external",
+                 siam_state_class_weight: str | None = None,
+                 siam_state_batch: int = 2048,
+                 siam_state_pretrain: int = 0,
+                 crt_epochs: int = 0, crt_lr: float = 2e-4,
+                 patch_tensor=None, patch_ids=None, patch_augment: bool = True,
+                 patch_dim: int = 64,
+                 aef_siam: bool = False):
         self.columns = list(columns)
         self.arch = arch
         self.loss = loss
@@ -1232,6 +1318,301 @@ class HierarchicalSoftmaxNN:
         # this Artificial in 2018 / in 2024") in addition to the three nested
         # levels. 0 disables, keeping the original three-level objective exactly.
         self.endpoint_weight = endpoint_weight
+        # --- siamese endpoint towers (arch='siamese') ------------------------
+        # siam_columns_18 and siam_columns_24 are the SAME features at the two
+        # dates, given in the same order, so one shared encoder can read both
+        # (see _SiameseTrunk). siam_extra_columns are the per-plot features that
+        # are not per-year -- change scalars, an S2 detail block -- and bypass
+        # the encoder into the mixer. siam_dim is the endpoint embedding width
+        # the cosine and Barlow losses act on; siam_combine picks what the head
+        # reads ('diff' or 'conc').
+        self.siam_columns_18 = list(siam_columns_18) if siam_columns_18 else None
+        self.siam_columns_24 = list(siam_columns_24) if siam_columns_24 else None
+        self.siam_extra_columns = list(siam_extra_columns or [])
+        self.siam_dim = siam_dim
+        self.siam_combine = siam_combine
+        # siam_year_adapter frees per-year calibration without unsharing the
+        # encoder: 'none' is fully siamese, 'input'/'output' add an
+        # identity-initialised diagonal affine per year before/after it. See
+        # _SiameseTrunk.
+        self.siam_year_adapter = siam_year_adapter
+        # --- section Q: modules transcribed from Zhang et al.'s burned-area
+        # Swin network (see _SiameseTrunk for what each one becomes without an
+        # image grid, and SIAMESE_RESEARCH.md section Q for the verdicts).
+        # siam_crfe: 'sum' | 'attn' | 'full' -- their CRFE fusion / channel
+        # attention. siam_pyramid: their pyramid decoder, as depth fusion.
+        self.siam_crfe = siam_crfe
+        self.siam_pyramid = siam_pyramid
+        # Hidden widths of the shared encoder. Never swept before section Y --
+        # 512/256 was chosen once and inherited by every siamese run since. The
+        # two ends are NOT free: the input is one date's columns and the output
+        # is `siam_dim`, because the mixer's `d_comb` and every pair loss are
+        # computed from it. Only the middle moves.
+        self.siam_hidden = tuple(siam_hidden)
+        # --- section Q10: modules transcribed from SNIIF-Net (Sci Rep 2025,
+        # s41598-025-15468-w), whose siamese layout is this one's with an image
+        # grid under it. siam_fiim is their Feature Information Interaction
+        # Module: each date's embedding is re-weighted by a gate that reads BOTH
+        # dates, so the pair interacts before the difference is taken rather than
+        # after it. That is the one thing section Q's CRFE gate does not do --
+        # `crfe='attn'` gates the ASSEMBLED block, downstream of the subtraction,
+        # so it cannot change z18/z24 themselves and therefore cannot change what
+        # the cosine losses read. See _SiameseTrunk.
+        self.siam_fiim = siam_fiim
+        # deep_sup_weight > 0 hangs an auxiliary coarse3 head off EVERY hidden
+        # stage of the shared encoder and supervises it through the same three
+        # nested levels. Discarded at predict time -- like the state head, it
+        # exists to put gradient into f and costs nothing at serving.
+        self.deep_sup_weight = deep_sup_weight
+        # dice_weight > 0 adds a soft-Dice term to the focal objective (their
+        # "hybrid loss"). dice_level='gate' takes it on the change class, which
+        # is a differentiable relaxation of the headline change-F1;
+        # dice_level='fine' takes an unweighted mean over the nine coarse3
+        # classes, which is the relaxation of `focus_macro_f1` instead.
+        if dice_level not in ("gate", "fine"):
+            raise ValueError(f"Unknown dice_level: {dice_level}")
+        self.dice_weight = dice_weight
+        self.dice_level = dice_level
+        if set_ce_level not in ("fine", "merged", "both"):
+            raise ValueError(f"Unknown set_ce_level: {set_ce_level}")
+        self.set_ce_weight = set_ce_weight
+        self.set_ce_level = set_ce_level
+        self.set_ce_alpha = set_ce_alpha
+        self.set_ce_random = set_ce_random
+        # --- section T: learning with noisy labels ---------------------------
+        # Every knob here addresses the same measured fact from a different
+        # direction: the coarse3 target carries interpreter disagreement on the
+        # Cropland/Nature boundary (analyse_label_noise.py), and the model is
+        # trained to fit it. `robust_loss` bounds the per-sample loss so a
+        # mislabelled row cannot dominate the gradient; `elr_weight` holds the
+        # model to what it believed before it memorised that row; `coteach`
+        # declines to train on it at all.
+        #
+        # robust_loss / robust_levels: see level_loss. The focal modulation is
+        # dropped wherever a robust core applies, so the matched reference for
+        # these arms is loss='ce'.
+        if robust_loss not in ("none", "gce", "sce", "boot_hard", "boot_soft"):
+            raise ValueError(f"Unknown robust_loss: {robust_loss}")
+        if robust_levels not in ("fine", "all"):
+            raise ValueError(f"Unknown robust_levels: {robust_levels}")
+        self.robust_loss = robust_loss
+        self.robust_q = robust_q
+        self.robust_alpha = robust_alpha
+        self.robust_beta = robust_beta
+        self.robust_a = robust_a
+        self.robust_levels = robust_levels
+        # cb_levels: which levels the `weighted_ce` / `cb_focal` class weights
+        # reach. 'all' is the historical behaviour -- gate, merged2 and fine all
+        # get them. 'fine' puts them on the nine coarse3 classes only, where the
+        # 46-plot transitions live, and leaves the 2-class gate unweighted: the
+        # gate is ~4:1, and reweighting it trades change precision for recall,
+        # which N13 established this product does not want. Without this the two
+        # effects are confounded in one `loss=` string.
+        if cb_levels not in ("fine", "all"):
+            raise ValueError(f"Unknown cb_levels: {cb_levels}")
+        self.cb_levels = cb_levels
+        # elr_weight > 0 adds early-learning regularisation (Liu et al. 2020):
+        # an EMA of the model's own coarse3 posterior per training row, and a
+        # term that penalises moving away from it. The premise is the empirical
+        # early-learning phase -- a network fits the clean majority first and
+        # memorises the mislabelled rows later -- so the EMA target is a record
+        # of what the model believed before memorisation, and it needs no noise
+        # estimate. elr_beta is the EMA momentum.
+        self.elr_weight = elr_weight
+        self.elr_beta = elr_beta
+        # coteach: two independently initialised networks, each selecting the
+        # rows the OTHER one trains on for that step.
+        #   'stochastic'  Bertels et al. (2023) -- keep a row when its
+        #                 ground-truth-label posterior under the peer clears a
+        #                 threshold drawn from Beta(a, b), ramped in over
+        #                 coteach_warmup/coteach_ramp epochs. **Needs no
+        #                 forget-rate and so no estimate of the noise level**,
+        #                 which is the property that makes it the arm worth
+        #                 running here: this project has no clean validation set
+        #                 to fit a forget rate against.
+        #   'classic'     Han et al. (2018) -- keep the (1 - forget) fraction of
+        #                 SMALLEST per-sample loss. Registered as the contrast
+        #                 that shows what the estimate buys.
+        #   'random'      the control: keep the same fraction, chosen at random.
+        #                 Without it, a gain from either arm above is
+        #                 indistinguishable from the regularisation of training
+        #                 on a random subsample.
+        # Only network A is ever served, so no arm can win by being a two-model
+        # ensemble; the peer exists to filter, and is discarded after fit().
+        if coteach not in ("off", "stochastic", "classic", "random"):
+            raise ValueError(f"Unknown coteach mode: {coteach}")
+        if coteach_level not in ("fine", "merged", "gate"):
+            raise ValueError(f"Unknown coteach_level: {coteach_level}")
+        if coteach_thresh_per not in ("batch", "instance"):
+            raise ValueError(f"Unknown coteach_thresh_per: {coteach_thresh_per}")
+        self.coteach = coteach
+        self.coteach_forget = coteach_forget
+        self.coteach_warmup = coteach_warmup
+        self.coteach_ramp = coteach_ramp
+        self.coteach_level = coteach_level
+        self.coteach_beta_a = coteach_beta_a
+        self.coteach_beta_b = coteach_beta_b
+        self.coteach_min_keep = coteach_min_keep
+        self.coteach_thresh_per = coteach_thresh_per
+        # coteach_stratify applies the keep rule WITHIN each coarse3 class, so
+        # the forget budget is spent at the same rate on every class instead of
+        # almost entirely on the rare ones. Measured on this target, an
+        # unstratified forget rate of 0.10 keeps 24% of the 46-plot
+        # `Artificial -> Cropland` steps and 99% of `Nature -> Nature`
+        # (coteach_diagnostics.py) -- a small-loss criterion ranks rarity, and
+        # rarity and mislabelling are not the same thing. This is the same
+        # correction Mondrian conformal makes to a pooled cut in section R, and
+        # it is what separates "selection does not work here" from "selection
+        # was never given a chance to filter noise rather than difficulty".
+        self.coteach_stratify = coteach_stratify
+        # Diagnostics, filled by fit(). keep_counts_ is the per-training-row
+        # count of epochs the row survived selection -- the object the section's
+        # relabelling queue is built from, and the reason to keep a rejected
+        # row's identity rather than only its count.
+        self.coteach_keep_rate_ = None
+        self.coteach_guard_rate_ = None
+        self.coteach_keep_counts_ = None
+        self.coteach_rows_ = None
+        # siam_cos_weight > 0 supervises the endpoint cosine directly with the
+        # gate label: a stable plot is one land cover measured twice and its two
+        # embeddings should point the same way, a change plot's should not.
+        # siam_cos_margin is the cosine a change pair is allowed to keep before
+        # it is penalised (0 = push to orthogonal).
+        self.siam_cos_weight = siam_cos_weight
+        self.siam_cos_margin = siam_cos_margin
+        # siam_cos_stable_margin is the SNIIF-Net double-margin form of the same
+        # term: the stable side gets slack too, so a pair that is already within
+        # `1 - cos <= eps` stops being pulled. The published loss is
+        # max(D - eps, 0)^2 on the unchanged side against max(theta - D, 0)^2 on
+        # the changed one, i.e. both sides hinged; this project's term hinges
+        # only the change side and drives every stable pair at 1 - cos towards
+        # exactly 1. 0.0 is the old behaviour exactly (cos <= 1, so the hinge is
+        # never active).
+        self.siam_cos_stable_margin = siam_cos_stable_margin
+        # siam_mssm_weight > 0 adds SNIIF-Net's Multi-Scale Supervision Method:
+        # the SAME pair objective as siam_cos_weight, repeated at every hidden
+        # stage of the shared encoder rather than at the final embedding alone.
+        # This is deep supervision (Q5) with the pair geometry as the auxiliary
+        # objective instead of a classification head, and that distinction is
+        # what makes it a separate question: Q5 was flat because the three nested
+        # levels already supervise the representation at full depth, but NOTHING
+        # currently constrains the pair at intermediate depth -- the cosine term
+        # reads z and only z. No parameters, so serving cost is unchanged (Q5's
+        # heads at least existed).
+        #
+        # siam_mssm_scales: 'stages' = the hidden stages only (the final
+        # embedding is already covered by siam_cos_weight); 'all' adds the final
+        # embedding, which is the paper's literal reading -- it constrains all
+        # four of its decoder scales including the one the prediction is made
+        # from. siam_mssm_metric: 'cos' reuses the hinge above; 'euclid' is the
+        # paper's squared-hinge Euclidean form. siam_mssm_margin defaults to
+        # siam_cos_margin ('cos') or 1.2 ('euclid').
+        if siam_mssm_scales not in ("stages", "all"):
+            raise ValueError(f"Unknown siam_mssm_scales: {siam_mssm_scales}")
+        if siam_mssm_metric not in ("cos", "euclid"):
+            raise ValueError(f"Unknown siam_mssm_metric: {siam_mssm_metric}")
+        self.siam_mssm_weight = siam_mssm_weight
+        self.siam_mssm_scales = siam_mssm_scales
+        self.siam_mssm_metric = siam_mssm_metric
+        self.siam_mssm_margin = (
+            siam_mssm_margin if siam_mssm_margin is not None
+            else (1.2 if siam_mssm_metric == "euclid" else siam_cos_margin))
+        self.siam_mssm_stable_margin = siam_mssm_stable_margin
+        # siam_barlow_weight > 0 adds Barlow Twins redundancy reduction over the
+        # STABLE endpoint pairs only, which supply two genuine views of one
+        # unchanged patch without an augmentation policy. siam_barlow_lambda is
+        # the paper's off-diagonal trade-off.
+        self.siam_barlow_weight = siam_barlow_weight
+        self.siam_barlow_lambda = siam_barlow_lambda
+        # siam_unlabelled_weight > 0 applies the SAME Barlow term to a minibatch
+        # of the unlabelled endpoint pool passed to fit() as ``unlabelled_frame``
+        # (build_unlabelled_aef.py), every pixel of which is assumed stable. This
+        # is the only term in the section that adds information rather than
+        # rearranging the labelled plots; it is separate from siam_barlow_weight
+        # so the labelled and unlabelled halves can be weighted apart.
+        self.siam_unlabelled_weight = siam_unlabelled_weight
+        self._siam_unlabelled_batch = siam_unlabelled_batch
+        # siam_state_weight > 0 adds an auxiliary SINGLE-DATE land-cover state
+        # head on the shared encoder: g(f(x)) -> {Nature, Cropland, Artificial}.
+        # This is the one place external single-date labels can enter the model
+        # at all -- f is a function of one date, while the flat trunk's first
+        # layer eats [2018 | 2024 | diff] and has no single-date input. N4 showed
+        # more *unlabelled* AlphaEarth buys nothing and concluded the shortage is
+        # labels; a state label is a label.
+        #
+        # siam_state_source picks where the supervision comes from:
+        #   'endogenous' -- the training plots' own endpoints. A transition
+        #                   label From -> To is two free state labels, so this
+        #                   adds no data and tests the MECHANISM alone. Expect
+        #                   little: F1 (TWOTOWER_RESEARCH) supervised the same
+        #                   marginals at the softmax and came back flat.
+        #   'external'   -- a separate single-date pool (build_state_labels.py).
+        #                   This is the only setting that adds information.
+        #   'both'       -- the two terms summed, equally weighted.
+        # Running 'endogenous' beside 'external' is what separates "the head
+        # helps" from "the new labels help"; neither number means much alone.
+        self.siam_state_weight = siam_state_weight
+        self.siam_state_source = siam_state_source
+        # 'balanced' re-weights the state head's cross-entropy by 1/class
+        # frequency, exactly as `statepre.models._MLP(class_weight="balanced")`
+        # does. STATE_PRETRAIN_RESEARCH.md section Y3 is why: it is the only
+        # thing tested there that moves the *ratio* of two errors rather than
+        # their sum -- cropland grows (`f1_cropland` +0.006/+0.004), the growth
+        # comes out of Nature (`nature_as_cropland` +0.008/+0.009), and built-up
+        # leaks LESS into cropland (`artificial_as_cropland` -0.004/-0.004), at
+        # both fold counts. That is the user's Oslo constraint stated as metrics.
+        # It costs state-level macro-F1 (-0.001/-0.005), so it is a trade and has
+        # to be judged on the map, which is what this option exists to produce.
+        self.siam_state_class_weight = siam_state_class_weight
+        self._siam_state_batch = siam_state_batch
+        # siam_state_pretrain > 0 runs the SAME state supervision as a separate
+        # phase BEFORE the transition loss is ever seen, instead of alongside it:
+        # n epochs of g(f(x)) -> state on the pool alone, then the usual fit from
+        # those weights with the auxiliary term off. Every arm of sections N14
+        # and P weighted the two objectives against each other at one optimiser
+        # step -- discarded side-loss, output parameterisation and input feature
+        # all landed flat -- and joint training is the one thing they share. It
+        # is a distinguishable experiment for two reasons: the encoder gets the
+        # pool's full capacity rather than a 0.3-weighted share, and the
+        # transition loss starts from a state-organised representation rather
+        # than from noise. It is NOT expected to break the section-P finding
+        # (GLanCE's errors are correlated with AlphaEarth's however they are fed)
+        # and it is registered so that stays a measurement rather than a guess.
+        #
+        # siam_state_source selects the pool exactly as above, and the
+        # endogenous arm is the control that matters: pretraining on the training
+        # plots' OWN endpoints adds no data, so it separates "a state-organised
+        # initialisation helps" from "GLanCE's labels help".
+        self.siam_state_pretrain = siam_state_pretrain
+        # crt_epochs > 0 runs Kang et al.'s classifier re-training after the main
+        # loop: the trunk is frozen at its served eval-mode behaviour and only
+        # the head is retrained, on a class-balanced draw. No new parameters and
+        # no serving cost -- the served graph is identical, only the head's
+        # weights differ. See _retrain_classifier for why this is not the
+        # already-negative G-H sampler.
+        self.crt_epochs = crt_epochs
+        self.crt_lr = crt_lr
+        self._crt_pair = None
+        # patch_tensor turns the two-tower's DETAIL tower into a small conv
+        # encoder over the stored (2 years x C bands x H x W) Sentinel-2 patches,
+        # instead of a wide MLP over hand-built statistics. S3 tested a FLATTENED
+        # 8x8 pooled patch (1,344 raw columns) and it was the worst result on the
+        # board; this tests the two things that test did not have -- weight
+        # sharing across the image, and the eight free dihedral augmentations
+        # that satellite patches admit and tabular columns do not. Privileged
+        # exactly like the columnar detail tower: mask-gated, dropped at serving,
+        # so no patch is ever read at inference.
+        self.patch_tensor = patch_tensor
+        self.patch_ids = patch_ids
+        self.patch_augment = patch_augment
+        self.patch_dim = patch_dim   # dropout comes from dropout_tess, as columnar does
+        self._patch_pos = ({pid: i for i, pid in enumerate(patch_ids)}
+                           if patch_ids is not None else None)
+        # aef_siam makes the two-tower's AlphaEarth tower a shared endpoint
+        # encoder (section N). The 2018/2024 split is derived from the COLUMN
+        # NAMES, so aef_columns may arrive in any order -- see
+        # _aef_siam_permutation.
+        self.aef_siam = aef_siam
 
     # -- trunks --------------------------------------------------------------
     def _flat_trunk(self, d: int):
@@ -1325,6 +1706,25 @@ class HierarchicalSoftmaxNN:
                 dropout=0.4, aef_maskable=self.aef_mask_column is not None,
                 fusion=self.fusion, tess_gate=self.tess_gate,
                 dropout_tess=self.dropout_tess, tess_width=self.tess_width,
+                aef_siam_perm=self._aef_siam_permutation() if self.aef_siam else None,
+                aef_siam_dim=self.siam_dim, aef_siam_combine=self.siam_combine,
+                aef_siam_crfe=self.siam_crfe, aef_siam_pyramid=self.siam_pyramid,
+                aef_siam_hidden=self.siam_hidden,
+                aef_siam_fiim=self.siam_fiim,
+                patch_tensor=self.patch_tensor, patch_augment=self.patch_augment,
+                patch_dim=self.patch_dim,
+            )
+            return trunk, self.tower_dim
+        if self.arch == "siamese":
+            # d is the packed width [x18 | x24 | extra]; the two endpoint blocks
+            # are equal by construction in _prepare, so d_end fixes the split.
+            d_end = len(self.siam_columns_18)
+            trunk = _SiameseTrunk(
+                d_end=d_end, d_extra=d - 2 * d_end, out_dim=self.tower_dim,
+                siam_dim=self.siam_dim, dropout=0.4, combine=self.siam_combine,
+                year_adapter=self.siam_year_adapter,
+                crfe=self.siam_crfe, pyramid=self.siam_pyramid,
+                fiim=self.siam_fiim, hidden=self.siam_hidden,
             )
             return trunk, self.tower_dim
         raise ValueError(f"Unknown flat arch: {self.arch}")
@@ -1398,7 +1798,50 @@ class HierarchicalSoftmaxNN:
                           (Xa - self.mu_a) / self.sd_a, 0.0)  # absent -> 0 = mean
             Xt = np.where(np.isfinite((Xt - self.mu_t) / self.sd_t),
                           (Xt - self.mu_t) / self.sd_t, 0.0)
+            if self.patch_tensor is not None:
+                # A raw, UNstandardised row-index column appended after the
+                # masks. The detail tower gathers its 64x64 patches with it
+                # rather than reading them out of the frame, because a
+                # (2 x 4 x 64 x 64) image per plot cannot be a set of DataFrame
+                # columns. Carrying an index instead of the pixels keeps every
+                # other path -- standardisation, minibatching, the mask gate --
+                # exactly as it is for a columnar detail tower.
+                idx = self._patch_index(frame).reshape(-1, 1).astype("float32")
+                return np.concatenate([Xa, Xt, ma, mt, idx], axis=1).astype("float32")
             return np.concatenate([Xa, Xt, ma, mt], axis=1).astype("float32")
+        if self.arch == "siamese":
+            # Pack [x18 | x24 | extra]. The two endpoint blocks are standardised
+            # with POOLED statistics -- one mu/sd per feature computed over both
+            # years stacked -- because a shared encoder that is handed two
+            # differently-centred versions of the same measurement has had its
+            # weight sharing undone before the first layer. It also keeps
+            # z24 - z18 and cos(z18, z24) meaningful: with per-year statistics a
+            # feature that simply drifted between 2018 and 2024 would be
+            # re-centred away and read as no change. ``extra`` is standardised on
+            # its own, NaN-safe, exactly as the flat branch below.
+            X18 = frame[self.siam_columns_18].to_numpy("float32")
+            X24 = frame[self.siam_columns_24].to_numpy("float32")
+            Xe = (frame[self.siam_extra_columns].to_numpy("float32")
+                  if self.siam_extra_columns
+                  else np.zeros((len(frame), 0), "float32"))
+            if fit:
+                pooled = np.concatenate([X18, X24], axis=0)
+                self.mu_end = np.nanmean(pooled, 0)
+                self.sd_end = np.nanstd(pooled, 0) + 1e-8
+                self.mu_extra = (np.nanmean(Xe, 0) if Xe.shape[1]
+                                 else np.zeros(0, "float32"))
+                self.sd_extra = (np.nanstd(Xe, 0) + 1e-8 if Xe.shape[1]
+                                 else np.ones(0, "float32"))
+
+            def norm(X, mu, sd):
+                Z = (X - mu) / sd
+                return np.where(np.isfinite(Z), Z, 0.0)
+
+            return np.concatenate(
+                [norm(X18, self.mu_end, self.sd_end),
+                 norm(X24, self.mu_end, self.sd_end),
+                 norm(Xe, self.mu_extra, self.sd_extra)],
+                axis=1).astype("float32")
         if self.arch == "gru":
             seq = np.stack(
                 [frame[self.year_columns[y]].to_numpy("float32")
@@ -1432,6 +1875,11 @@ class HierarchicalSoftmaxNN:
         gate = ["change" if is_change_label(m) else "stable"
                 for m in self.merged_classes_]
         self.gate_classes_ = sorted(set(gate))
+        # Where 'stable' landed in the sorted gate list -- the siamese auxiliary
+        # losses split the batch on it and must not assume the ordering. -1 when
+        # a fold is single-sided, which both losses treat as "no pairs".
+        self._stable_gate_idx = (self.gate_classes_.index("stable")
+                                 if "stable" in self.gate_classes_ else -1)
 
         m_idx = {c: i for i, c in enumerate(self.merged_classes_)}
         g_idx = {c: i for i, c in enumerate(self.gate_classes_)}
@@ -1496,8 +1944,141 @@ class HierarchicalSoftmaxNN:
         # observable classes keeps each row a valid P(observe . | true k).
         return T / T.sum(1, keepdims=True)
 
+    def _build_network(self, in_shape, n_fine: int, seed: int):
+        """Trunk plus fine head, seeded, registered in ``self._modules_``.
+
+        Split out of ``fit`` so that a **second, independently initialised copy**
+        of the same architecture can be built for co-teaching without
+        duplicating any of fit's target, hierarchy or standardisation setup --
+        the peer shares all of that by construction (see ``_make_peer``) and
+        differs only in its weights and in the rows it is shown.
+        """
+        import torch
+        import torch.nn as nn
+
+        torch.manual_seed(seed)
+        if self.arch == "gru":
+            self.gru = nn.GRU(in_shape[2], self.hidden, batch_first=True,
+                              bidirectional=True).to(self.device)
+            rep_dim = 2 * self.hidden
+        else:
+            self.trunk, rep_dim = self._flat_trunk(in_shape[1])
+            self.trunk.to(self.device)
+        head_modules = self._build_head(rep_dim, n_fine)
+        trunk = (self.gru,) if self.arch == "gru" else (self.trunk,)
+        self._modules_ = trunk + head_modules
+
+    def _make_peer(self, in_shape, n_fine: int):
+        """The co-teaching partner: same configuration, different initialisation.
+
+        A shallow copy, so every fitted-but-shared piece -- the standardisation
+        statistics, the class lists, the 0/1 level-aggregation matrices, the
+        endpoint index tensors -- is the *same object* on both networks and
+        cannot drift apart. Only the parameters are rebuilt, under a different
+        torch seed, which is the entire source of the two networks' disagreement
+        and therefore of the method: Han et al.'s premise is that two nets
+        initialised apart filter different errors for each other, and a peer that
+        shared the initialisation would filter nothing.
+        """
+        import copy
+
+        peer = copy.copy(self)
+        peer._build_network(in_shape, n_fine, self.seed + 7919)
+        return peer
+
+    def _coteach_keep(self, p_true, per_loss, epoch: int, rng, groups=None):
+        """Rows this network selects for its partner to train on this step.
+
+        Returns ``(keep, guard_fired)``. ``p_true`` is the posterior of the
+        *given* label at ``coteach_level``, ``per_loss`` the per-row three-level
+        loss; which one is read depends on the mode. ``groups`` is the per-row
+        coarse3 class, read only when ``coteach_stratify`` is set.
+        """
+        import torch
+
+        n = int(p_true.numel())
+        device = p_true.device
+        if self.coteach in ("classic", "random"):
+            # Han et al.'s schedule: forget nothing at epoch 0, ramp the forget
+            # rate linearly to `coteach_forget` over `coteach_ramp` epochs.
+            tau = self.coteach_forget * min(1.0, (epoch + 1) / max(self.coteach_ramp, 1))
+            keep = torch.zeros(n, dtype=torch.bool, device=device)
+            # Stratified: the same forget rate applied inside every class, so
+            # the budget cannot be spent on rarity. Unstratified: one pooled
+            # ranking, which is the published method.
+            blocks = ([torch.arange(n, device=device)] if not self.coteach_stratify
+                      else [torch.nonzero(groups == c, as_tuple=True)[0]
+                            for c in torch.unique(groups)])
+            for block in blocks:
+                if len(block) == 0:
+                    continue
+                k = max(1, int(round((1.0 - tau) * len(block))))
+                if self.coteach == "classic":
+                    keep[block[per_loss[block].argsort()[:k]]] = True
+                else:
+                    pick = rng.choice(len(block), size=k, replace=False)
+                    keep[block[torch.as_tensor(pick, device=device,
+                                               dtype=torch.long)]] = True
+            return keep, False
+        if self.coteach_stratify:
+            raise ValueError(
+                "coteach_stratify is defined for the rank-based selectors "
+                "(classic/random). The stochastic threshold is a cut on the "
+                "posterior itself, and stratifying it means calibrating a "
+                "per-class cut -- which is Mondrian conformal, already measured "
+                "post-hoc in section R, not this method.")
+
+        # Stochastic co-teaching (Bertels et al. 2023, Sci Rep 13:16875). The
+        # threshold is a draw from Beta(a, b) -- mass near 1, with a tail that
+        # occasionally admits a low-posterior row -- scaled by the ramp
+        # eta = clip((epoch - warmup) / ramp, 0, 1) so early epochs (eta = 0,
+        # threshold 0) train on everything and selection phases in. There is no
+        # forget rate anywhere in that, which is the point.
+        eta = float(np.clip((epoch - self.coteach_warmup) / max(self.coteach_ramp, 1),
+                            0.0, 1.0))
+        size = n if self.coteach_thresh_per == "instance" else 1
+        for _ in range(5):
+            draw = np.clip(rng.beta(self.coteach_beta_a, self.coteach_beta_b,
+                                    size=size), 0.01, 0.99) * eta
+            thresh = torch.as_tensor(draw, device=device, dtype=p_true.dtype)
+            keep = p_true > thresh
+            if float(keep.float().mean()) >= self.coteach_min_keep:
+                return keep, False
+        # The paper's guard resamples the *mini-batch* after five failed draws.
+        # This project trains full-batch by default, so there is no other batch
+        # to draw; the fallback keeps the `coteach_min_keep` highest-posterior
+        # rows instead. Recorded as `coteach_guard_rate_` because a high rate
+        # means the Beta prior is mismatched to this model's confidence, not
+        # that the data is clean -- the paper's alpha=32, beta=2 assumes a model
+        # whose true-class posterior reaches ~0.94, and a 9-class hierarchical
+        # head on 6.5k plots does not.
+        k = max(1, int(round(self.coteach_min_keep * n)))
+        keep = torch.zeros(n, dtype=torch.bool, device=device)
+        keep[p_true.argsort(descending=True)[:k]] = True
+        return keep, True
+
+    def _elr_loss(self, p_fine, idx):
+        """Early-learning regularisation (Liu et al. 2020) on the coarse3 head.
+
+        ``log(1 - <t_i, p_i>)`` against an EMA ``t_i`` of the model's own
+        posterior for that row. Early in training the EMA records the clean
+        early-learning fit; later it opposes the gradient that would memorise a
+        mislabelled row. Needs the *global* row index, which is why it lives in
+        ``batch_loss`` rather than in ``_levels``.
+        """
+        import torch
+
+        p = p_fine.clamp(1e-6, 1.0 - 1e-6)
+        with torch.no_grad():
+            q = p.detach()
+            q = q / q.sum(1, keepdim=True).clamp_min(1e-8)
+            self._elr_target[idx] = (self.elr_beta * self._elr_target[idx]
+                                     + (1.0 - self.elr_beta) * q)
+        inner = (self._elr_target[idx] * p).sum(1).clamp_max(1.0 - 1e-4)
+        return torch.log(1.0 - inner).mean()
+
     def _build_head(self, rep_dim: int, n_fine: int):
-        """Fine-logit head: a flat linear, or a factorised bilinear endpoint head."""
+        """Fine-logit head: flat linear, bilinear, or endpoint-tied factorised."""
         import torch
         import torch.nn as nn
 
@@ -1512,12 +2093,124 @@ class HierarchicalSoftmaxNN:
             # explain every interaction additively.
             self.fine_bias = nn.Parameter(torch.zeros(n_fine, device=self.device))
             return (self.from_head, self.to_head)
+        if self.head == "proto":
+            # Cosine (prototype) classifier: logit_k = s * cos(rep, w_k). One
+            # learnable prototype per coarse3 class plus one learnable scale.
+            #
+            # The mechanism is long-tail specific and is NOT what focal loss
+            # already does. A plain linear head trained on a 4,200-vs-46 split
+            # develops class weight NORMS proportional to class frequency, so the
+            # rare class loses on magnitude before its direction is ever
+            # consulted; focal reweights the loss but leaves that geometry in
+            # place. Normalising both sides removes the magnitude channel
+            # entirely and leaves only the direction -- which is the same
+            # decoupling insight as O2, applied to the parameterisation rather
+            # than to the training schedule (Kang et al.'s tau-normalisation).
+            self.proto = nn.Parameter(
+                torch.randn(n_fine, rep_dim, device=self.device) * 0.02)
+            self.proto_scale = nn.Parameter(torch.tensor(10.0, device=self.device))
+            return ()
+        if self.head in ("endpoint", "endpoint_pure"):
+            if self.arch != "siamese" and not self.aef_siam:
+                raise ValueError(
+                    f"head={self.head!r} reads the endpoint pair (z18, z24) and "
+                    "so needs a shared encoder -- set arch='siamese', or "
+                    "arch='two_tower' with aef_siam=True. On a flat trunk the "
+                    "factorisation has no date structure to tie the two state "
+                    "reads to, which is `head='bilinear'` and is already "
+                    "tested-negative.")
+            n_base = len(self.base_classes_)
+            # ONE state head, applied to both endpoint embeddings. This is the
+            # whole difference from `bilinear` and it is only expressible on a
+            # siamese trunk: there, f is a function of a single date, so g(z18)
+            # and g(z24) are the same question asked twice and the two marginals
+            # pool their evidence. `bilinear` reads two SEPARATE heads off the
+            # one fused representation, which has no date structure to tie them
+            # to -- and it is on the tested-negative list.
+            self.state_head = nn.Linear(self.siam_dim, n_base).to(self.device)
+            # Learned per-transition log-prior, 9 scalars. Without it the head
+            # asserts from and to are conditionally independent given the pair,
+            # which is false: the transition matrix is strongly diagonal.
+            self.trans_prior = nn.Parameter(torch.zeros(n_fine, device=self.device))
+            mods = (self.state_head,)
+            if self.head == "endpoint":
+                # Zero-initialised residual over the FUSED representation, so
+                # training starts at exactly the pure factorised model and the
+                # residual has to earn every logit it moves. It is also the only
+                # path by which the privileged Sentinel-2 detail tower reaches
+                # the fine head at all -- the factorised term reads the
+                # AlphaEarth endpoint embeddings and nothing else, so without
+                # this `endpoint_pure` on a two-tower silently discards the
+                # detail tower from the coarse3 read.
+                self.fine_head = nn.Linear(rep_dim, n_fine).to(self.device)
+                nn.init.zeros_(self.fine_head.weight)
+                nn.init.zeros_(self.fine_head.bias)
+                mods = mods + (self.fine_head,)
+            return mods
         raise ValueError(f"Unknown head: {self.head}")
+
+    def _patch_index(self, frame) -> np.ndarray:
+        """Row of ``patch_tensor`` for every row of ``frame``, -1 where absent.
+
+        Resolved by PLOTID rather than by position, because the frame is built by
+        merges and reindexed by the CV split; a positional assumption would
+        silently pair a plot with another plot's imagery, which no metric in this
+        project would catch.
+        """
+        if "PLOTID" not in frame.columns:
+            raise ValueError("a patch detail tower needs PLOTID on the frame")
+        return np.array([self._patch_pos.get(p, -1) for p in frame["PLOTID"]],
+                        dtype="int64")
+
+    def _loose_params(self) -> list:
+        """Head parameters that live outside any ``nn.Module``.
+
+        ``fine_bias`` and ``trans_prior`` are bare ``nn.Parameter``s, so they
+        reach neither ``_modules_.parameters()`` nor ``state_dict()``. Collected
+        in one place because forgetting them in *either* the optimiser or the
+        early-stopping snapshot fails silently -- an unoptimised prior stays at
+        its zero init and simply looks like the idea not working.
+        """
+        loose = []
+        if self.head == "bilinear":
+            loose.append(self.fine_bias)
+        if self.head in ("endpoint", "endpoint_pure"):
+            loose.append(self.trans_prior)
+        if self.head == "proto":
+            loose.extend([self.proto, self.proto_scale])
+        return loose
 
     def _fine_logits(self, rep):
         """Coarse3 logits from the representation, per the configured head."""
+        import torch.nn.functional as F
+
         if self.head == "flat":
             return self.fine_head(rep)
+        if self.head == "proto":
+            return self.proto_scale * F.normalize(rep, dim=1) @ \
+                F.normalize(self.proto, dim=1).T
+        if self.head in ("endpoint", "endpoint_pure"):
+            # logit(A -> B) = log P(from=A | z18) + log P(to=B | z24) + prior(A -> B)
+            #
+            # The point is N0: `Artificial -> Cropland` has 46 plots and every
+            # model in section N returns it at 0.000, because a 9-way softmax
+            # has to find a decision boundary for it against 4,200 stable plots.
+            # This head never draws that boundary. Its 46 plots are read through
+            # `from=Artificial` (~1k plots) and `to=Cropland` (~1.5k plots) plus
+            # one scalar, so the rare cell inherits the marginals' support.
+            #
+            # log_softmax rather than raw logits, so the two terms are genuine
+            # log-probabilities and the sum is a proper factorised model up to
+            # the prior -- with raw logits the scale of each head would be free
+            # and the factorisation would carry no probabilistic meaning.
+            z18, z24 = self._siam_pair()
+            lp_from = F.log_softmax(self.state_head(z18), dim=1)
+            lp_to = F.log_softmax(self.state_head(z24), dim=1)
+            logits = (lp_from[:, self._from_idx] + lp_to[:, self._to_idx]
+                      + self.trans_prior)
+            if self.head == "endpoint":
+                logits = logits + self.fine_head(rep)
+            return logits
         # Bilinear: logit(A -> B) = from[A] + to[B] + bias(A -> B). Shares every
         # transition that shares a from- or to-class, so rare transitions borrow
         # strength from the common ones on the same endpoint.
@@ -1526,19 +2219,217 @@ class HierarchicalSoftmaxNN:
         return from_logits + to_logits + self.fine_bias
 
     def _levels(self, p_fine, fine_t, merged_t, gate_t,
-                w_fine, w_merged, w_gate, wf, wm, wg):
-        """Weighted sum of the fine/merged/gate losses for one batch of probs."""
+                w_fine, w_merged, w_gate, wf, wm, wg, extras: bool = True,
+                per_sample: bool = False):
+        """Weighted sum of the fine/merged/gate losses for one batch of probs.
+
+        ``extras=False`` drops the terms that are properties of the *objective*
+        rather than of the three levels -- the endpoint marginals and the Dice
+        term. The deep-supervision heads pass it, so that composing deep
+        supervision with either of those does not silently apply them once per
+        auxiliary head as well as once on the main output.
+
+        ``per_sample=True`` returns the three-level sum as a per-row vector and
+        implies ``extras=False``: every extra term is a statistic of the *batch*
+        (a Dice overlap, a conformal quantile) and has no per-row value to
+        return. It is the read a sample-selection method scores rows with.
+        """
         p_merged = p_fine @ self._M
         p_gate = p_merged @ self._G
         # Forward correction: the fine head predicts the *clean* posterior and is
         # pushed through T to explain the noisy labels (identity if noise_rate=0).
         p_fine_obs = p_fine @ self._T if self._T is not None else p_fine
-        loss = (wf * level_loss(p_fine_obs, fine_t, self.loss, w_fine, self.gamma)
-                + wm * level_loss(p_merged, merged_t, self.loss, w_merged, self.gamma)
-                + wg * level_loss(p_gate, gate_t, self.loss, w_gate, self.gamma))
+        rob = dict(reduce=not per_sample, robust=self.robust_loss,
+                   robust_q=self.robust_q, robust_alpha=self.robust_alpha,
+                   robust_beta=self.robust_beta, robust_a=self.robust_a)
+        # `robust_levels='fine'` puts the bounded surrogate only where this
+        # project measures the noise -- the coarse3 Cropland/Nature boundary --
+        # and leaves the merged2/gate levels, which the legend already absorbs
+        # the noise on, at the configured loss.
+        coarse = dict(rob) if self.robust_levels == "all" else dict(
+            rob, robust="none")
+        loss = (wf * level_loss(p_fine_obs, fine_t, self.loss, w_fine, self.gamma,
+                                **rob)
+                + wm * level_loss(p_merged, merged_t, self.loss, w_merged,
+                                  self.gamma, **coarse)
+                + wg * level_loss(p_gate, gate_t, self.loss, w_gate, self.gamma,
+                                  **coarse))
+        if per_sample:
+            return loss
+        if not extras:
+            return loss
         if self.endpoint_weight > 0:
             loss = loss + self.endpoint_weight * self._endpoint_loss(p_merged, merged_t)
+        if self.dice_weight > 0:
+            loss = loss + self.dice_weight * self._dice_loss(p_fine, p_gate,
+                                                             fine_t, gate_t)
+        if self.set_ce_weight > 0:
+            terms = []
+            if self.set_ce_level in ("fine", "both"):
+                terms.append(self._set_ce_loss(p_fine, fine_t, level_offset=0))
+            if self.set_ce_level in ("merged", "both"):
+                terms.append(self._set_ce_loss(p_merged, merged_t, level_offset=1000003))
+            loss = loss + self.set_ce_weight * sum(terms)
         return loss
+
+    def _set_ce_loss(self, probs, target, level_offset: int = 0):
+        """Cross-entropy renormalised to the conformal prediction set (section S).
+
+        ``-log( p_y / sum_{k in S} p_k )`` -- *given* the answer is one of these
+        k classes, be right. The set comes from :meth:`_conformal_sets` and is a
+        constant mask, so this reweights which pairs of logits get pushed apart
+        without differentiating through the quantile.
+        """
+        import torch
+
+        built = self._conformal_sets(probs, target, level_offset)
+        if built is None:
+            return probs.new_tensor(0.0)
+        mask, score_idx, _cal_idx, _q = built
+        with torch.no_grad():
+            # A singleton restricted CE is identically zero: no gradient, and
+            # averaging over those rows would only dilute the term.
+            keep = mask.sum(1) >= 2
+        if not bool(keep.any()):
+            return probs.new_tensor(0.0)
+        p = probs[score_idx][keep].clamp_min(1e-8)
+        y = target[score_idx][keep]
+        chosen = mask[keep]
+        numer = p.gather(1, y[:, None]).squeeze(1)
+        denom = (p * chosen.to(p.dtype)).sum(1).clamp_min(1e-8)
+        return -(torch.log(numer) - torch.log(denom)).mean()
+
+    def _conformal_sets(self, probs, target, level_offset: int = 0):
+        """Mondrian LAC sets over the scored half of a batch, as a constant mask.
+
+        ConfTr's split construction: half the rows calibrate the per-class
+        quantiles and the *other* half is scored, alternating each epoch, or the
+        term is trivially satisfied by the rows that set the threshold. The
+        quantile is a hard order statistic, so the whole construction runs under
+        ``no_grad`` and the set reaches the loss as a 0/1 mask.
+
+        Returns ``(mask, score_idx, cal_idx, q)`` or ``None`` when the batch is
+        too small to split. ``mask`` is over ``score_idx`` rows only.
+        """
+        import torch
+
+        n, n_classes = probs.shape
+        if n < 2 or n_classes < 2:
+            return None
+        epoch = int(getattr(self, "_epoch", 0))
+        generator = torch.Generator(device=probs.device)
+        generator.manual_seed(int(self.seed) + level_offset)
+        perm = torch.randperm(n, device=probs.device, generator=generator)
+        mid = n // 2
+        if epoch % 2 == 0:
+            cal_idx, score_idx = perm[:mid], perm[mid:]
+        else:
+            cal_idx, score_idx = perm[mid:], perm[:mid]
+        if len(cal_idx) == 0 or len(score_idx) == 0:
+            return None
+
+        with torch.no_grad():
+            cal_p = probs[cal_idx]
+            cal_y = target[cal_idx]
+            q = torch.empty(n_classes, device=probs.device, dtype=probs.dtype)
+            for cls in range(n_classes):
+                scores = 1.0 - cal_p[cal_y == cls, cls]
+                count = int(scores.numel())
+                rank = int(np.ceil((count + 1) * (1.0 - self.set_ce_alpha)))
+                if count == 0 or rank > count:
+                    q[cls] = 1.0
+                else:
+                    q[cls] = scores.sort().values[rank - 1].clamp_max(1.0)
+
+            score_p = probs[score_idx]
+            score_y = target[score_idx]
+            mask = (1.0 - score_p) <= q[None, :]
+            mask.scatter_(1, score_y[:, None], True)
+
+            if self.set_ce_random:
+                sizes = mask.sum(1).clamp(1, n_classes)
+                rand_gen = torch.Generator(device=probs.device)
+                rand_gen.manual_seed(int(self.seed) + level_offset + 7919 * (epoch + 1))
+                noise = torch.rand(len(score_idx), n_classes, device=probs.device,
+                                   generator=rand_gen)
+                noise.scatter_(1, score_y[:, None], float("inf"))
+                order = noise.argsort(dim=1)
+                rank = torch.empty_like(order)
+                positions = torch.arange(n_classes, device=probs.device)[None, :].expand_as(order)
+                rank.scatter_(1, order, positions)
+                mask = rank < (sizes[:, None] - 1)
+                mask.scatter_(1, score_y[:, None], True)
+
+        return mask, score_idx, cal_idx, q
+
+    def _dice_loss(self, p_fine, p_gate, fine_t, gate_t):
+        """Soft-Dice over the change class, or macro over the coarse3 classes.
+
+        The hybrid half of Zhang et al.'s "deep supervision and hybrid loss":
+        focal is a per-sample objective and cannot see the *set* overlap the
+        model is scored on, while Dice on the change class is exactly a
+        differentiable change-F1 -- ``2|P n T| / (|P| + |T|)`` with soft
+        memberships. Taken over the whole batch, which under this project's
+        full-batch default is the whole training fold, so the statistic is the
+        one the metric computes rather than a minibatch estimate of it.
+
+        ``dice_level='fine'`` averages the per-class Dice over all nine coarse3
+        classes UNWEIGHTED, which makes it the relaxation of ``focus_macro_f1``:
+        the 46-plot transition contributes as much as the 4,200-plot stable one,
+        and unlike focal loss that weighting is on the overlap rather than on
+        the per-sample gradient.
+        """
+        import torch
+
+        eps = 1.0
+        if self.dice_level == "gate":
+            if self._stable_gate_idx < 0:
+                return p_gate.new_tensor(0.0)      # single-sided fold, no pairs
+            change_idx = 1 - self._stable_gate_idx
+            p = p_gate[:, change_idx]
+            y = (gate_t != self._stable_gate_idx).to(p.dtype)
+            return 1.0 - (2.0 * (p * y).sum() + eps) / (p.sum() + y.sum() + eps)
+        onehot = torch.zeros_like(p_fine)
+        onehot.scatter_(1, fine_t[:, None], 1.0)
+        inter = (p_fine * onehot).sum(0)
+        denom = p_fine.sum(0) + onehot.sum(0)
+        return (1.0 - (2.0 * inter + eps) / (denom + eps)).mean()
+
+    def _siam_stages(self):
+        """Per-stage ``[(h18, h24), ...]`` from the shared encoder's last pass.
+
+        Same lookup as ``_siam_pair``: the encoder sits at the trunk for
+        ``arch='siamese'`` and inside the AlphaEarth tower for the two-tower.
+        """
+        for module in (self.trunk, getattr(self.trunk, "aef_tower", None)):
+            if module is not None and getattr(module, "last_h", None) is not None:
+                return module.last_h
+        raise RuntimeError(
+            "deep_sup_weight > 0 but no shared encoder produced intermediates "
+            "-- arch must be 'siamese', or 'two_tower' with aef_siam=True")
+
+    def _deep_sup_loss(self, fine_t, merged_t, gate_t,
+                       w_fine, w_merged, w_gate, wf, wm, wg):
+        """The three-level loss, repeated at every hidden stage of the encoder.
+
+        Each stage's pair is combined the way the head combines the final one --
+        ``[h18, h24, h24-h18, |h24-h18|]`` -- and read by its own linear head
+        into coarse3 logits, whose softmax is then group-summed to merged2 and
+        gate by the same fixed matrices. So the auxiliary signal is not a
+        different objective at a shallower depth; it is the *same* objective,
+        which is what deep supervision means and what makes the weight
+        interpretable against the main term.
+        """
+        import torch
+
+        total = None
+        for head, (h18, h24) in zip(self.deep_heads, self._siam_stages()):
+            d = h24 - h18
+            p = torch.softmax(head(torch.cat([h18, h24, d, d.abs()], dim=1)), dim=1)
+            term = self._levels(p, fine_t, merged_t, gate_t, w_fine, w_merged,
+                                w_gate, wf, wm, wg, extras=False)
+            total = term if total is None else total + term
+        return total / max(len(self.deep_heads), 1)
 
     def _endpoint_loss(self, p_merged, merged_t):
         """State-marginal loss: what each date *is*, not what the pair does.
@@ -1554,7 +2445,8 @@ class HierarchicalSoftmaxNN:
         return 0.5 * (level_loss(p_from, from_t, self.loss, self._w_from, self.gamma)
                       + level_loss(p_to, to_t, self.loss, self._w_to, self.gamma))
 
-    def fit(self, frame, y, unlabelled_frame=None, soft_merged=None):
+    def fit(self, frame, y, unlabelled_frame=None, soft_merged=None,
+            state_frame=None):
         import torch
         import torch.nn as nn
 
@@ -1593,6 +2485,11 @@ class HierarchicalSoftmaxNN:
                                       dtype=torch.long)
             state_mode = {"ce": "none", "weighted_ce": "inverse",
                           "focal": "none", "cb_focal": "effective"}[self.loss]
+            # The endpoint heads classify *state*, not transition, so they sit
+            # with the coarse levels under cb_levels='fine'. Inert on the
+            # siamese recipes, which carry endpoint_weight=0.
+            if self.cb_levels != "all":
+                state_mode = "none"
             self._w_from = torch.tensor(
                 class_weights(self.merged_from_idx_[merged_t], n_state, state_mode),
                 device=self.device)
@@ -1600,19 +2497,51 @@ class HierarchicalSoftmaxNN:
                 class_weights(self.merged_to_idx_[merged_t], n_state, state_mode),
                 device=self.device)
 
-        torch.manual_seed(self.seed)
-        if self.arch == "gru":
-            self.gru = nn.GRU(Xs.shape[2], self.hidden, batch_first=True,
-                              bidirectional=True).to(self.device)
-            rep_dim = 2 * self.hidden
-        else:
-            self.trunk, rep_dim = self._flat_trunk(Xs.shape[1])
-            self.trunk.to(self.device)
-        head_modules = self._build_head(rep_dim, n_fine)
+        self._build_network(Xs.shape, n_fine, self.seed)
         self._from_idx = torch.tensor(self.from_idx_, device=self.device)
         self._to_idx = torch.tensor(self.to_idx_, device=self.device)
-        trunk = (self.gru,) if self.arch == "gru" else (self.trunk,)
-        self._modules_ = trunk + head_modules
+
+        # Deep supervision: one auxiliary coarse3 head per hidden stage of the
+        # shared encoder, reading that stage's pair the way the real head reads
+        # the final one. Built here rather than in _build_head because they are
+        # not a head choice -- they ride whatever head is configured.
+        self.deep_heads = None
+        if self.deep_sup_weight > 0:
+            enc = self._siam_encoder()
+            self.deep_heads = nn.ModuleList(
+                [nn.Linear(4 * dim, n_fine) for dim in enc.stage_dims]
+            ).to(self.device)
+            self._modules_ = self._modules_ + (self.deep_heads,)
+
+        # Auxiliary single-date state head on the shared encoder embedding. One
+        # linear layer, discarded at predict time -- it exists to put gradient
+        # into f, never to be read. Serving cost is therefore unchanged, which is
+        # the property the whole s2off line is built around.
+        if self.head not in ("endpoint", "endpoint_pure"):
+            self.state_head = None
+        self._X_state = self._y_state = None
+        if self.siam_state_weight > 0 or self.siam_state_pretrain > 0:
+            if (self.siam_state_source in ("endogenous", "both")
+                    and self.siam_unlabelled_weight > 0):
+                raise ValueError(
+                    "the endogenous state term reads last_z18/last_z24, which "
+                    "the unlabelled Barlow pass overwrites -- combining them "
+                    "would silently supervise the pool's embeddings with the "
+                    "plots' labels. Use siam_state_source='external'.")
+            if self.state_head is None:
+                self.state_head = nn.Linear(
+                    self.siam_dim, len(self.base_classes_)).to(self.device)
+                self._modules_ = self._modules_ + (self.state_head,)
+            # With an endpoint head the state head is ALREADY the output
+            # parameterisation, so the auxiliary term supervises the same
+            # parameters directly rather than a discarded copy -- which is
+            # exactly what N14b was missing when it threw the head away.
+            if self.siam_state_source in ("external", "both"):
+                if state_frame is None:
+                    raise ValueError(
+                        "siam_state_source includes 'external' but fit() got no "
+                        "state_frame")
+                self._X_state, self._y_state = self._prepare_state_pool(state_frame)
 
         # Forward-correction matrix on the fine level (identity if noise_rate=0).
         self._T = (torch.tensor(self._noise_matrix(), device=self.device)
@@ -1620,11 +2549,14 @@ class HierarchicalSoftmaxNN:
 
         weight_mode = {"ce": "none", "weighted_ce": "inverse",
                        "focal": "none", "cb_focal": "effective"}[self.loss]
+        # `cb_levels='fine'` keeps the class weights off the gate and merged2
+        # levels -- see the constructor.
+        coarse_mode = weight_mode if self.cb_levels == "all" else "none"
         w_fine = torch.tensor(class_weights(fine_t, n_fine, weight_mode),
                               device=self.device)
-        w_merged = torch.tensor(class_weights(merged_t, n_merged, weight_mode),
+        w_merged = torch.tensor(class_weights(merged_t, n_merged, coarse_mode),
                                 device=self.device)
-        w_gate = torch.tensor(class_weights(gate_t, n_gate, weight_mode),
+        w_gate = torch.tensor(class_weights(gate_t, n_gate, coarse_mode),
                               device=self.device)
 
         Xt = torch.tensor(Xs, device=self.device)
@@ -1654,6 +2586,19 @@ class HierarchicalSoftmaxNN:
         if unlabelled_frame is not None and self.ssl:
             Xu = torch.tensor(self._prepare(unlabelled_frame, fit=False),
                               device=self.device)
+
+        # Unlabelled endpoint pool for the siamese Barlow term. Prepared with the
+        # LABELLED fold's standardisation (fit=False) -- the pool must land in the
+        # same space as the training rows or the shared encoder sees two
+        # distributions and the cross-correlation is measuring the shift between
+        # them rather than year-invariance. Every pooled pixel is *assumed*
+        # stable, which is wrong on the AOI's change fraction (~0.5%); see
+        # build_unlabelled_aef.py for why that is the whole approximation.
+        self._Xu_siam = None
+        if (unlabelled_frame is not None and self.arch == "siamese"
+                and self.siam_barlow_weight > 0 and self.siam_unlabelled_weight > 0):
+            self._Xu_siam = torch.tensor(
+                self._prepare(unlabelled_frame, fit=False), device=self.device)
 
         # Optional within-fold hold-out for early stopping. The outer CV is
         # already spatially blocked, so this random split only picks the stopping
@@ -1694,8 +2639,7 @@ class HierarchicalSoftmaxNN:
                     for b in range(gh_n_batches)]
 
         params = [p for m in self._modules_ for p in m.parameters()]
-        if self.head == "bilinear":
-            params.append(self.fine_bias)
+        params.extend(self._loose_params())
         optimiser = torch.optim.AdamW(params, lr=2e-3, weight_decay=1e-2)
         if self.sampler == "gh":
             steps_per_epoch = gh_n_batches
@@ -1706,8 +2650,48 @@ class HierarchicalSoftmaxNN:
             optimiser, max_lr=2e-3, total_steps=self.epochs * steps_per_epoch
         )
 
-        def batch_loss(idx):
-            """Summed 3-level loss over training rows ``idx`` (mixup if enabled)."""
+        # Early-learning regularisation keeps one EMA row per TRAINING row, so it
+        # is indexed by position in this fold's frame and dies with the fold.
+        self._elr_target = None
+        if self.elr_weight > 0:
+            self._elr_target = torch.zeros(len(fine_t), n_fine, device=self.device)
+
+        # The co-teaching partner, built last so the shallow copy carries every
+        # piece of fit-time state assigned above (standardisation, teacher
+        # posteriors, unlabelled pool). It is trained, read for its selections,
+        # and then discarded -- `self` alone is what predict() serves.
+        peer = peer_optimiser = peer_schedule = None
+        if self.coteach != "off":
+            if self.elr_weight > 0:
+                raise ValueError(
+                    "co-teaching and ELR would share one _elr_target tensor "
+                    "through the shallow copy, so the peer's beliefs would be "
+                    "written into the EMA the first network is held to. Run them "
+                    "as separate arms.")
+            if self.crt_epochs > 0 or self.sampler == "gh":
+                raise ValueError(
+                    "co-teaching selects rows per step; cRT retraining and the "
+                    "G-H sampler both re-choose the rows themselves.")
+            peer = self._make_peer(Xs.shape, n_fine)
+            peer_params = [p for m in peer._modules_ for p in m.parameters()]
+            peer_params.extend(peer._loose_params())
+            peer_optimiser = torch.optim.AdamW(peer_params, lr=2e-3,
+                                               weight_decay=1e-2)
+            peer_schedule = torch.optim.lr_scheduler.OneCycleLR(
+                peer_optimiser, max_lr=2e-3,
+                total_steps=self.epochs * steps_per_epoch)
+
+        def batch_loss(idx, net=None):
+            """Summed 3-level loss over training rows ``idx`` (mixup if enabled).
+
+            ``net`` selects *which* network's parameters the loss is built from
+            and defaults to this one. Co-teaching passes the peer here so both
+            networks are trained under a single definition of the objective --
+            every auxiliary term, the Sentinel-2 gate, the cosine loss and the
+            standardisation included -- rather than a second, drifting copy of
+            it. The two differ only in their weights and in ``idx``.
+            """
+            net = self if net is None else net
             it = torch.as_tensor(np.asarray(idx), device=self.device, dtype=torch.long)
             fb, mb, gb = fine_tt[it], merged_tt[it], gate_tt[it]
             Xb = Xt[it]
@@ -1715,19 +2699,76 @@ class HierarchicalSoftmaxNN:
                 lam = float(rng.beta(self.mixup_alpha, self.mixup_alpha))
                 order = torch.randperm(len(idx), device=self.device)
                 Xb = lam * Xb + (1.0 - lam) * Xb[order]
-                rep = self._inject(self._encode(self._inject(Xb, "input")), "rep")
-                p_fine = torch.softmax(self._fine_logits(rep), dim=1)
-                return (lam * self._levels(p_fine, fb, mb, gb, w_fine, w_merged,
-                                           w_gate, wf, wm, wg)
-                        + (1.0 - lam) * self._levels(p_fine, fb[order], mb[order],
-                                                     gb[order], w_fine, w_merged,
-                                                     w_gate, wf, wm, wg))
-            rep = self._inject(self._encode(self._inject(Xb, "input")), "rep")
-            p_fine = torch.softmax(self._fine_logits(rep), dim=1)
-            loss = self._levels(p_fine, fb, mb, gb, w_fine, w_merged, w_gate,
-                                wf, wm, wg)
+                rep = net._inject(net._encode(net._inject(Xb, "input")), "rep")
+                p_fine = torch.softmax(net._fine_logits(rep), dim=1)
+                return (lam * net._levels(p_fine, fb, mb, gb, w_fine, w_merged,
+                                          w_gate, wf, wm, wg)
+                        + (1.0 - lam) * net._levels(p_fine, fb[order], mb[order],
+                                                    gb[order], w_fine, w_merged,
+                                                    w_gate, wf, wm, wg))
+            rep = net._inject(net._encode(net._inject(Xb, "input")), "rep")
+            p_fine = torch.softmax(net._fine_logits(rep), dim=1)
+            loss = net._levels(p_fine, fb, mb, gb, w_fine, w_merged, w_gate,
+                               wf, wm, wg)
+            if self.elr_weight > 0:
+                loss = loss + self.elr_weight * net._elr_loss(p_fine, it)
+            if self.deep_sup_weight > 0:
+                # Reads the intermediates from the forward pass just above, so it
+                # must come before any auxiliary term that runs the encoder again
+                # (the unlabelled Barlow pass and the external state pass both
+                # overwrite them).
+                loss = loss + self.deep_sup_weight * self._deep_sup_loss(
+                    fb, mb, gb, w_fine, w_merged, w_gate, wf, wm, wg)
             if self.align_weight > 0 and self.arch == "two_tower":
-                loss = loss + self.align_weight * self._align_loss()
+                loss = loss + self.align_weight * net._align_loss()
+            if (self.arch in ("siamese", "two_tower")
+                    and (self.siam_cos_weight > 0 or self.siam_barlow_weight > 0
+                         or self.siam_mssm_weight > 0)):
+                # gb is the gate target for these rows: index of 'stable' in the
+                # sorted gate class list, so 'change' < 'stable' and stable == 1.
+                stable = gb == self._stable_gate_idx
+                if self.siam_mssm_weight > 0:
+                    # Reads the per-stage intermediates from the forward pass
+                    # above, so it goes before the unlabelled/state passes that
+                    # overwrite them -- same constraint as _deep_sup_loss.
+                    loss = loss + self.siam_mssm_weight * net._siam_mssm_loss(stable)
+                if self.siam_cos_weight > 0:
+                    loss = loss + self.siam_cos_weight * net._siam_cos_loss(stable)
+                if self.siam_barlow_weight > 0:
+                    loss = loss + self.siam_barlow_weight * net._siam_barlow_loss(stable)
+                if self._Xu_siam is not None:
+                    # Same term on a minibatch of unlabelled pixel pairs. Drawn
+                    # fresh each step so the 30 epochs see far more of the pool
+                    # than one pass would, and run through the trunk in its own
+                    # forward pass -- last_z18/last_z24 are overwritten, so this
+                    # must come AFTER the labelled Barlow term above reads them.
+                    #
+                    # The BatchNorm running statistics are FROZEN for this pass.
+                    # Without that freeze the extra forward pass folds the pool's
+                    # distribution into the running mean/var that eval() then uses
+                    # to normalise labelled test plots -- and the pool is one
+                    # city's pixels while the labelled plots are spread across
+                    # the sample, so the two are not the same distribution.
+                    # Measured: running |mean| 0.058 -> 0.189 and running var
+                    # 0.368 -> 0.270, which cost -0.053 change-F1 and collapsed
+                    # stable-Artificial recall from 0.638 to 0.443. The gradient
+                    # signal from the pool is wanted; its batch statistics are
+                    # not.
+                    sub = torch.randint(len(self._Xu_siam),
+                                        (min(self._siam_unlabelled_batch,
+                                             len(self._Xu_siam)),),
+                                        device=self.device)
+                    with net._frozen_bn_stats():
+                        net._encode(self._Xu_siam[sub])
+                    all_stable = torch.ones(len(sub), dtype=torch.bool,
+                                            device=self.device)
+                    loss = loss + self.siam_unlabelled_weight * \
+                        net._siam_barlow_loss(all_stable)
+            if self.siam_state_weight > 0:
+                # Must come after the cosine/Barlow terms above: the external
+                # pass overwrites last_z18/last_z24, and those read the pair.
+                loss = loss + self.siam_state_weight * net._siam_state_loss(
+                    self._from_idx[fb], self._to_idx[fb])
             if self._soft is not None:
                 # Soft cross-entropy at the merged2 level, averaged over the rows
                 # the teacher actually scored.
@@ -1738,19 +2779,75 @@ class HierarchicalSoftmaxNN:
                     (ce * keep).sum() / keep.sum().clamp_min(1.0))
             return loss
 
+        # Section T bookkeeping: how often each training row survived selection
+        # for the served network, and how often the stochastic guard had to fire.
+        keep_counts = np.zeros(len(fine_t), dtype="int64")
+        keep_tally = [0.0, 0, 0]                  # sum(rate), steps, guard hits
+
+        def coteach_step(chunk, epoch):
+            """One co-teaching step: each network trains on its partner's picks."""
+            it = torch.as_tensor(np.asarray(chunk), device=self.device,
+                                 dtype=torch.long)
+            fb, mb, gb = fine_tt[it], merged_tt[it], gate_tt[it]
+            picks = {}
+            for tag, net in (("A", self), ("B", peer)):
+                # Selection reads the network in eval mode. Under this project's
+                # recipe the training forward drops a whole modality half the
+                # time (modality_dropout=0.5) and 70% of the detail tower's
+                # units, so a train-mode posterior is a draw from a wide
+                # distribution rather than the network's belief about the row --
+                # and the whole method is that belief.
+                for module in net._modules_:
+                    module.eval()
+                with torch.no_grad():
+                    p_fine = torch.softmax(net._fine_logits(net._encode(Xt[it])), 1)
+                    p_merged = p_fine @ self._M
+                    if self.coteach_level == "fine":
+                        p_true = p_fine.gather(1, fb[:, None]).squeeze(1)
+                    elif self.coteach_level == "merged":
+                        p_true = p_merged.gather(1, mb[:, None]).squeeze(1)
+                    else:
+                        p_true = (p_merged @ self._G).gather(1, gb[:, None]).squeeze(1)
+                    per_loss = net._levels(p_fine, fb, mb, gb, w_fine, w_merged,
+                                           w_gate, wf, wm, wg, per_sample=True)
+                keep, guard = net._coteach_keep(p_true, per_loss, epoch, rng,
+                                                groups=fb)
+                picks[tag] = keep
+                keep_tally[2] += int(guard)
+                for module in net._modules_:
+                    module.train()
+            # The cross: A trains on what B kept, B on what A kept. Training each
+            # on its own picks is self-paced learning, a different (and weaker)
+            # method -- the error a network makes is invisible to itself.
+            for net, opt, sch, keep in ((self, optimiser, schedule, picks["B"]),
+                                        (peer, peer_optimiser, peer_schedule,
+                                         picks["A"])):
+                kept = it[keep]
+                if len(kept) == 0:
+                    sch.step()
+                    continue
+                opt.zero_grad()
+                loss = batch_loss(kept.detach().cpu().numpy(), net=net)
+                loss.backward()
+                opt.step()
+                sch.step()
+            served = picks["B"].detach().cpu().numpy()
+            keep_counts[np.asarray(chunk)[served]] += 1
+            keep_tally[0] += float(served.mean())
+            keep_tally[1] += 1
+
         def snapshot():
             state = [{k: v.detach().clone() for k, v in m.state_dict().items()}
                      for m in self._modules_]
-            return (state, self.fine_bias.detach().clone()
-                    if self.head == "bilinear" else None)
+            return (state, [p.detach().clone() for p in self._loose_params()])
 
         def restore(snap):
-            state, bias = snap
+            state, loose = snap
             for module, st in zip(self._modules_, state):
                 module.load_state_dict(st)
-            if bias is not None:
-                with torch.no_grad():
-                    self.fine_bias.copy_(bias)
+            with torch.no_grad():
+                for param, saved in zip(self._loose_params(), loose):
+                    param.copy_(saved)
 
         # Interleaved-noise state: _noise_scale co-scales the injected std with the
         # running gradient norm when noise_gradscale is set (1.0 = off/unscaled).
@@ -1759,11 +2856,23 @@ class HierarchicalSoftmaxNN:
         grad_ema = [None]  # running gradient-norm EMA; ref = first observed value
         grad_ref = [None]
 
+        if self.siam_state_pretrain > 0:
+            self._pretrain_state(Xs, fine_t, tr_idx)
+
         best_f1, best_snap, since_best = -1.0, None, 0
         for _epoch in range(self.epochs):
+            self._epoch = _epoch
             for module in self._modules_:
                 module.train()
             self._noise_factor_cur = self._noise_factor(_epoch)
+            if peer is not None:
+                # The peer is a distinct object, so the per-epoch state the loss
+                # terms read off `self` has to be mirrored onto it.
+                peer._epoch = _epoch
+                peer._noise_factor_cur = self._noise_factor_cur
+                peer._noise_scale = self._noise_scale
+                for module in peer._modules_:
+                    module.train()
             if self.sampler == "gh":
                 chunks = gh_batches()
             else:
@@ -1773,6 +2882,9 @@ class HierarchicalSoftmaxNN:
                           else [order[i:i + self.batch_size]
                                 for i in range(0, len(order), self.batch_size)])
             for chunk in chunks:
+                if peer is not None:
+                    coteach_step(chunk, _epoch)
+                    continue
                 optimiser.zero_grad()
                 loss = batch_loss(chunk)
                 if self.arch == "moe" and self.moe_aux > 0 and \
@@ -1810,6 +2922,106 @@ class HierarchicalSoftmaxNN:
                         break
         if best_snap is not None:
             restore(best_snap)
+        if peer is not None:
+            # Keep what the selection did, not the network that did it. The
+            # counts are per training row of THIS fold; the caller maps them
+            # back to plots (see twotower_lab.coteach_keep_table).
+            steps = max(keep_tally[1], 1)
+            self.coteach_keep_rate_ = keep_tally[0] / steps
+            self.coteach_guard_rate_ = keep_tally[2] / (2 * steps)
+            self.coteach_keep_counts_ = keep_counts
+            # Rows actually offered to the selector: with early stopping on, the
+            # held-out split never enters a chunk, and a zero count there means
+            # "never seen", not "always rejected".
+            self.coteach_rows_ = tr_idx
+            self.coteach_steps_ = steps
+            del peer
+        self._elr_target = None
+        if self.crt_epochs > 0:
+            self._retrain_classifier(Xt, tr_idx, fine_tt, merged_tt, gate_tt,
+                                     w_fine, w_merged, w_gate, wf, wm, wg, rng)
+        return self
+
+    def _retrain_classifier(self, Xt, tr_idx, fine_tt, merged_tt, gate_tt,
+                            w_fine, w_merged, w_gate, wf, wm, wg, rng):
+        """cRT: freeze the representation, retrain only the head, class-balanced.
+
+        Kang et al. (2020) decouple long-tailed recognition into representation
+        learning and classifier learning, and their central finding is that
+        class-balanced *sampling* damages the representation while helping the
+        classifier. That is the reading of this project's own G-H sampling
+        negative (`gh-sampler-does-not-help`): the balanced sampler was applied
+        during joint training, which is precisely the configuration Kang et al.
+        report as the losing one. Decoupling is the version that has not run.
+
+        The trunk goes to ``eval()`` and its gradients off, so BatchNorm uses its
+        running statistics and the representation is frozen *exactly* as it will
+        be at predict time -- retraining a head against train-mode batch
+        statistics would tune it for a representation the model never serves.
+        The representation is therefore constant, so it is computed once and the
+        head is retrained on the cached matrix: the whole pass costs a few
+        seconds regardless of ``crt_epochs``.
+
+        Resampling is on the FINE target, since that is where the imbalance the
+        head is meant to see actually lives (46 plots against 4,200).
+        """
+        import numpy as np
+        import torch
+
+        for module in self._modules_:
+            module.eval()
+        trunk = self.gru if self.arch == "gru" else self.trunk
+        head_modules = tuple(m for m in self._modules_ if m is not trunk)
+        # The endpoint head reads (z18, z24) off the trunk's last forward pass,
+        # and this loop never runs the trunk again -- so the pair is cached with
+        # the representation and replayed through _crt_pair. Without that the
+        # head would retrain against whichever chunk happened to be last, which
+        # is wrong silently rather than loudly.
+        reps, pairs = [], []
+        with torch.no_grad():
+            for i in range(0, len(tr_idx), 4096):
+                it = torch.as_tensor(tr_idx[i:i + 4096], device=self.device,
+                                     dtype=torch.long)
+                reps.append(self._encode(Xt[it]))
+                if self.head in ("endpoint", "endpoint_pure"):
+                    pairs.append(tuple(z.detach() for z in self._siam_pair()))
+        rep = torch.cat(reps)
+        pair = ((torch.cat([p[0] for p in pairs]),
+                 torch.cat([p[1] for p in pairs])) if pairs else None)
+        for module in head_modules:
+            module.train()
+        params = [p for m in head_modules for p in m.parameters()]
+        params.extend(self._loose_params())
+        optimiser = torch.optim.AdamW(params, lr=self.crt_lr, weight_decay=1e-2)
+
+        fine_local = fine_tt[torch.as_tensor(tr_idx, device=self.device,
+                                             dtype=torch.long)]
+        merged_local = merged_tt[torch.as_tensor(tr_idx, device=self.device,
+                                                 dtype=torch.long)]
+        gate_local = gate_tt[torch.as_tensor(tr_idx, device=self.device,
+                                             dtype=torch.long)]
+        # Class-balanced draw: every fine class contributes the same number of
+        # rows per epoch, so the 46-plot transition is seen as often as the
+        # 4,200-plot stable one. Sampled with replacement, which is what makes
+        # the rare classes reachable at all.
+        pools = [np.flatnonzero(fine_local.cpu().numpy() == k)
+                 for k in range(len(self.fine_classes_))]
+        pools = [p for p in pools if len(p)]
+        per_class = max(1, len(tr_idx) // max(len(pools), 1))
+        for _ in range(self.crt_epochs):
+            draw = np.concatenate([p[rng.integers(len(p), size=per_class)]
+                                   for p in pools])
+            it = torch.as_tensor(rng.permutation(draw), device=self.device,
+                                 dtype=torch.long)
+            optimiser.zero_grad()
+            self._crt_pair = (pair[0][it], pair[1][it]) if pair else None
+            p_fine = torch.softmax(self._fine_logits(rep[it]), dim=1)
+            loss = self._levels(p_fine, fine_local[it], merged_local[it],
+                                gate_local[it], w_fine, w_merged, w_gate,
+                                wf, wm, wg)
+            loss.backward()
+            optimiser.step()
+        self._crt_pair = None
         return self
 
     def _ssl_loss(self, Xu):
@@ -1833,6 +3045,472 @@ class HierarchicalSoftmaxNN:
             return Xu.new_tensor(0.0)
         p_strong = torch.softmax(self._fine_logits(self._encode(strong)), 1) @ self._M
         return level_loss(p_strong[keep], pseudo[keep], "ce")
+
+    def _aef_siam_permutation(self):
+        """Indices viewing ``aef_columns`` as ``[all _2018 | all _2024 | rest]``.
+
+        Derived from the column *names*, and the two year blocks are sorted by
+        the same band stem, so ``A07_2018`` and ``A07_2024`` land at the same
+        offset in their blocks whatever order the caller supplied. That is the
+        one property the shared encoder needs: position *i* must be the same
+        measurement at both dates.
+
+        Raises rather than truncating when the endpoints do not pair up 1:1 --
+        a mismatch would silently hand the encoder two different feature sets
+        and train something that looks fine and means nothing.
+        """
+        cols = self.aef_columns
+        stem = lambda i: cols[i].rsplit("_", 1)[0]  # noqa: E731
+        i18 = sorted((i for i, c in enumerate(cols) if c.endswith("_2018")), key=stem)
+        i24 = sorted((i for i, c in enumerate(cols) if c.endswith("_2024")), key=stem)
+        rest = [i for i, c in enumerate(cols)
+                if not c.endswith(("_2018", "_2024"))]
+        if not i18 or [stem(i) for i in i18] != [stem(i) for i in i24]:
+            raise ValueError(
+                "aef_siam needs matching _2018/_2024 columns for every band; "
+                f"got {len(i18)} and {len(i24)}")
+        return i18, i24, rest
+
+    def _siam_pair(self):
+        """The last endpoint embedding pair, wherever the siamese encoder sits.
+
+        `arch='siamese'` puts it at the trunk; `arch='two_tower'` with
+        `aef_siam` puts it inside the AlphaEarth tower. The auxiliary
+        losses are the same either way, so they look the pair up rather than
+        assuming a location -- and a missing pair is a configuration error worth
+        raising on, not a zero worth silently adding.
+        """
+        if getattr(self, "_crt_pair", None) is not None:
+            return self._crt_pair          # replayed cache, see _retrain_classifier
+        for module in (self.trunk, getattr(self.trunk, "aef_tower", None)):
+            if module is not None and hasattr(module, "last_z18"):
+                return module.last_z18, module.last_z24
+        raise RuntimeError(
+            "siamese auxiliary loss requested but no endpoint pair was produced "
+            "-- arch must be 'siamese', or 'two_tower' with aef_siam=True")
+
+    def _siam_encoder(self):
+        """The module holding the shared encoder, wherever it sits.
+
+        Same lookup as ``_siam_pair``: ``arch='siamese'`` puts it at the trunk,
+        ``arch='two_tower'`` with ``aef_siam`` nests it in the AlphaEarth tower.
+        """
+        for module in (self.trunk, getattr(self.trunk, "aef_tower", None)):
+            if module is not None and hasattr(module, "encode_single"):
+                return module
+        raise RuntimeError(
+            "siam_state_weight > 0 but no shared encoder was built -- arch must "
+            "be 'siamese', or 'two_tower' with aef_siam=True")
+
+    def _state_endpoint_columns(self) -> tuple[list, object, object]:
+        """The 2018 endpoint columns and the statistics that standardise them.
+
+        The external pool must land in exactly the space the paired path puts
+        the 2018 block in, or the shared encoder is handed two distributions and
+        the state head learns the shift between them instead of land cover. The
+        two arches reach the same block by different routes, so the statistics
+        are looked up per arch rather than assumed.
+        """
+        if self.arch == "siamese":
+            return list(self.siam_columns_18), self.mu_end, self.sd_end
+        if self.arch == "two_tower" and self.aef_siam:
+            i18, _, _ = self._aef_siam_permutation()
+            cols = [self.aef_columns[i] for i in i18]
+            return cols, self.mu_a[i18], self.sd_a[i18]
+        raise RuntimeError(
+            f"no single-date endpoint block for arch={self.arch!r} "
+            f"(aef_siam={self.aef_siam})")
+
+    def _state_endpoint_slices(self) -> tuple[object, object]:
+        """Column indices into the prepared matrix for the 2018 and 2024 blocks.
+
+        The index-level twin of ``_state_endpoint_columns``, for the *endogenous*
+        pool -- which is not a frame to be looked up by name but the fold's own
+        already-standardised ``Xs``, sliced into its two dates.
+
+        The two arches pack that matrix differently and the difference is not
+        cosmetic. ``siamese`` packs ``[x18 | x24 | extra]``, so the dates are
+        contiguous halves. ``two_tower`` packs ``[aef | detail | masks]`` with
+        the AlphaEarth block in the caller's sorted column order, and the shared
+        encoder gathers the year blocks *inside* the tower -- so the 2018 columns
+        are scattered through the first block and `siam_columns_18` is None.
+        Slicing ``[:d_end]`` there, as this used to, either raises (it did) or
+        would silently hand the encoder half of 2018 and half of 2024.
+        """
+        if self.arch == "siamese":
+            d_end = len(self.siam_columns_18)
+            return slice(0, d_end), slice(d_end, 2 * d_end)
+        if self.arch == "two_tower" and self.aef_siam:
+            # Indices into `aef_columns`, which `_prepare` writes as the leading
+            # block of Xs, so they are indices into Xs unchanged.
+            i18, i24, _ = self._aef_siam_permutation()
+            return np.asarray(i18), np.asarray(i24)
+        raise RuntimeError(
+            f"no single-date endpoint block for arch={self.arch!r} "
+            f"(aef_siam={self.aef_siam})")
+
+    def _prepare_state_pool(self, state_frame):
+        """(X, y) for the external pool, standardised like the 2018 block.
+
+        Raises on a state outside the model's own endpoint vocabulary rather
+        than dropping it: a pool whose legend does not match is the failure this
+        whole line of work is gated on (N14), and it must not pass silently.
+        """
+        import numpy as np
+        import torch
+
+        cols, mu, sd = self._state_endpoint_columns()
+        missing = [c for c in cols if c not in state_frame.columns]
+        if missing:
+            raise ValueError(
+                f"state pool is missing {len(missing)} endpoint columns, e.g. "
+                f"{missing[:3]} -- it must carry the same 2018 block the model "
+                "is trained on")
+        X = state_frame[cols].to_numpy("float32")
+        Z = (X - mu) / sd
+        Z = np.where(np.isfinite(Z), Z, 0.0).astype("float32")
+
+        vocab = {c.lower(): i for i, c in enumerate(self.base_classes_)}
+        raw = state_frame["state"].astype(str).str.strip().str.lower()
+        unknown = sorted(set(raw) - set(vocab))
+        if unknown:
+            raise ValueError(
+                f"state pool has states outside the model's endpoint classes "
+                f"{self.base_classes_}: {unknown}")
+        y = raw.map(vocab).to_numpy("int64")
+        return (torch.tensor(Z, device=self.device),
+                torch.tensor(y, device=self.device))
+
+    def _pretrain_state(self, Xs, fine_t, tr_idx):
+        """Train the shared encoder on single-date states, before the main loop.
+
+        The same objective ``_siam_state_loss`` adds as a weighted term, run
+        instead as its own phase: ``siam_state_pretrain`` epochs of
+        ``g(f(x)) -> state`` over the pool, updating only the encoder and the
+        state head, after which ``fit`` proceeds normally from those weights.
+        Sections N14 and P varied *where* the state path lands and got the same
+        flat answer three times; this varies *when*, which is the one axis they
+        share.
+
+        Three properties are deliberate.
+
+        * **The endogenous arm reads the standardised endpoint blocks directly**
+          -- ``Xs[:, :d]`` is the 2018 block and ``Xs[:, d:2d]`` the 2024 block,
+          both already pooled-standardised by ``_prepare`` -- rather than the
+          forward pass's ``last_z18``/``last_z24`` the joint term uses. There is
+          no forward pass to read yet, and a ``From -> To`` label is two free
+          state labels, so this is the no-new-data control.
+        * **Only training rows enter**, via ``tr_idx``. With early stopping on,
+          the held-out split picks the stopping epoch, and pretraining on it
+          would leak that choice into the representation.
+        * **BatchNorm running statistics are frozen**, for the reason N4
+          recorded: the pool is not the labelled plots' distribution, and
+          letting it write the running mean/var that ``eval()`` later uses on
+          test plots cost -0.053 change-F1 there. The gradient is wanted; the
+          batch statistics are not. The 30 main epochs would partly overwrite
+          them anyway, which is exactly what makes an unfrozen pass a silent,
+          seed-dependent contaminant rather than an honest one.
+        """
+        import numpy as np
+        import torch
+        import torch.nn.functional as F
+
+        # Its own stream, not the caller's: the two arms hold different numbers
+        # of pool rows, so drawing the pretrain shuffles from `fit`'s rng would
+        # leave the main loop's minibatch order at a different point in the same
+        # stream for each arm, and the comparison would carry that as well as the
+        # pool.
+        pre_rng = np.random.default_rng(self.seed + 1_000_003)
+
+        blocks = []                      # (X, year_tag, y)
+        if self.siam_state_source in ("endogenous", "both"):
+            # `tr_idx` is this fold's training rows and nothing else, which is
+            # what makes the endogenous pool leak-free: the labels are the two
+            # halves of the transition target the fit is already supervised on,
+            # never a held-out plot's. See tests/test_state_pool_leak.py for the
+            # sibling guarantee on the *external* file path, which needs the
+            # block filter to get there.
+            s18, s24 = self._state_endpoint_slices()
+            X = torch.tensor(Xs[tr_idx], device=self.device)
+            y_fine = fine_t[tr_idx]
+            blocks.append((X[:, s18], "2018",
+                           torch.tensor(self.from_idx_[y_fine],
+                                        device=self.device, dtype=torch.long)))
+            blocks.append((X[:, s24], "2024",
+                           torch.tensor(self.to_idx_[y_fine],
+                                        device=self.device, dtype=torch.long)))
+        if self.siam_state_source in ("external", "both"):
+            blocks.append((self._X_state, "2018", self._y_state))
+
+        # Class weights over the *concatenated* pool, so a 'both' run balances
+        # the states it actually sees rather than each source separately.
+        class_weight = None
+        if self.siam_state_class_weight == "balanced":
+            counts = torch.zeros(len(self.base_classes_), device=self.device)
+            for _, _, y in blocks:
+                counts += torch.bincount(y, minlength=len(self.base_classes_))
+            # N / (C * n_c), the sklearn convention `statepre` also uses. Mean
+            # weight over the pool is exactly 1, so the loss scale is unchanged.
+            present = counts > 0
+            class_weight = torch.zeros_like(counts)
+            class_weight[present] = (counts.sum()
+                                     / (present.sum() * counts[present]))
+
+        n = sum(len(X) for X, _, _ in blocks)
+        batch = max(1, min(self._siam_state_batch, n))
+        steps_per_epoch = max(1, int(np.ceil(n / batch)))
+        encoder = self._siam_encoder()
+        params = list(encoder.parameters()) + list(self.state_head.parameters())
+        optimiser = torch.optim.AdamW(params, lr=2e-3, weight_decay=1e-2)
+        schedule = torch.optim.lr_scheduler.OneCycleLR(
+            optimiser, max_lr=2e-3,
+            total_steps=self.siam_state_pretrain * steps_per_epoch)
+
+        # One flat index over the concatenated blocks, so a 'both' run shuffles
+        # the two sources together instead of alternating pure-source steps.
+        bounds = np.cumsum([0] + [len(X) for X, _, _ in blocks])
+        for module in self._modules_:
+            module.train()
+        for _ in range(self.siam_state_pretrain):
+            order = pre_rng.permutation(n)
+            for start in range(0, n, batch):
+                chunk = order[start:start + batch]
+                optimiser.zero_grad()
+                loss, rows = 0.0, 0
+                for b, (X, year, y) in enumerate(blocks):
+                    take = chunk[(chunk >= bounds[b]) & (chunk < bounds[b + 1])]
+                    # A single row cannot go through BatchNorm in train mode, and
+                    # each block can leave at most one such remainder in the last
+                    # chunk of an epoch. Dropped rather than padded or run in
+                    # eval mode: one row of 13,118 per epoch is not worth either
+                    # a duplicate gradient or a second normalisation regime.
+                    if len(take) < 2:
+                        continue
+                    sub = torch.tensor(take - bounds[b], device=self.device,
+                                       dtype=torch.long)
+                    with self._frozen_bn_stats():
+                        z = encoder.encode_single(X[sub], year)
+                    loss = loss + F.cross_entropy(
+                        self.state_head(z), y[sub], reduction="sum",
+                        weight=class_weight)
+                    # Normalise by the weight actually applied, not the row
+                    # count, so the batch loss stays a weighted *mean* and the
+                    # reweighting cannot change the effective learning rate as a
+                    # side effect. With no weighting w == 1 and this is the row
+                    # count, i.e. byte-identical to the unweighted path.
+                    rows += (len(take) if class_weight is None
+                             else float(class_weight[y[sub]].sum()))
+                if not rows:
+                    continue
+                (loss / rows).backward()
+                optimiser.step()
+                schedule.step()
+        self.state_pretrain_loss_ = float(loss / max(rows, 1))
+
+    def _siam_state_loss(self, from_b, to_b):
+        """Cross-entropy of the state head on single-date encoder embeddings.
+
+        The endogenous half reads the training rows' own endpoints -- ``z18``
+        should say ``From`` and ``z24`` should say ``To`` -- and reuses the pair
+        the forward pass already produced, so it costs one linear layer.
+
+        The external half draws a fresh minibatch from the pool each step and
+        runs its own forward pass. **BatchNorm running statistics are frozen for
+        that pass** (N4's silent defect: the extra pass folded an out-of-
+        distribution pool into the running mean/var that ``eval()`` then used on
+        test plots, costing -0.053 change-F1 and collapsing stable-Artificial
+        recall from 0.638 to 0.443). The gradient from the pool is wanted; its
+        batch statistics are not.
+        """
+        import torch
+        import torch.nn.functional as F
+
+        terms = []
+        if self.siam_state_source in ("endogenous", "both"):
+            z18, z24 = self._siam_pair()
+            terms.append(0.5 * (F.cross_entropy(self.state_head(z18), from_b)
+                                + F.cross_entropy(self.state_head(z24), to_b)))
+        if self.siam_state_source in ("external", "both"):
+            if self._X_state is None:
+                raise RuntimeError(
+                    "siam_state_source includes 'external' but no state pool was "
+                    "passed to fit(state_frame=...)")
+            sub = torch.randint(len(self._X_state),
+                                (min(self._siam_state_batch, len(self._X_state)),),
+                                device=self.device)
+            encoder = self._siam_encoder()
+            with self._frozen_bn_stats():
+                z = encoder.encode_single(self._X_state[sub], "2018")
+            terms.append(F.cross_entropy(self.state_head(z), self._y_state[sub]))
+        return sum(terms) / max(len(terms), 1)
+
+    @contextlib.contextmanager
+    def _frozen_bn_stats(self):
+        """Forward through the trunk without updating BatchNorm running stats.
+
+        ``momentum = 0`` leaves ``running_mean``/``running_var`` untouched
+        (PyTorch updates them as ``(1 - m) * running + m * batch``) while the
+        layer still normalises by the *batch* statistics, so the pass is
+        numerically what training would do and only the eval-time state is
+        protected. Restores whatever momentum each module had, so a module
+        configured differently is not silently rewritten.
+        """
+        import torch.nn as nn
+
+        saved = [(m, m.momentum) for m in self.trunk.modules()
+                 if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d))]
+        for module, _ in saved:
+            module.momentum = 0.0
+        try:
+            yield
+        finally:
+            for module, momentum in saved:
+                module.momentum = momentum
+
+    def _siam_cos_loss(self, stable):
+        """Gate-supervised cosine between the two endpoint embeddings.
+
+        A stable plot is one piece of ground measured twice, so its 2018 and
+        2024 embeddings should point the same way; a change plot's should not.
+        This states that directly on the representation instead of hoping the
+        classifier head induces it, which is the whole argument for the siamese
+        layout -- and it is supervision the *stable majority* carries, so it
+        costs nothing on the rare transitions that are the actual target.
+
+        The two group terms are averaged with equal weight, not pooled: stable
+        plots outnumber change plots roughly 4:1 here and a pooled mean would be
+        almost entirely the stable term, i.e. a plain "make everything similar"
+        regulariser. ``siam_cos_margin`` is the cosine a change pair may keep
+        before it is penalised -- 0 pushes change pairs to orthogonal, which is
+        stronger than the task needs (a Nature -> Cropland plot is not the
+        opposite of itself), so a positive margin is the sane setting.
+        """
+        import torch
+        import torch.nn.functional as F
+
+        z18, z24 = self._siam_pair()
+        return self._pair_margin_term(
+            z18, z24, stable, metric="cos", margin=self.siam_cos_margin,
+            stable_margin=self.siam_cos_stable_margin)
+
+    def _pair_margin_term(self, a, b, stable, *, metric, margin, stable_margin):
+        """One scale's contrastive term: pull stable pairs together, push change apart.
+
+        Factored out of ``_siam_cos_loss`` so the multi-scale term applies the
+        *identical* objective at the hidden stages -- if the two drifted, a flat
+        MSSM result would be about the drift rather than about the depth.
+
+        ``metric='cos'`` is this project's form: ``1 - cos`` on the stable side
+        (hinged at ``stable_margin``, which is 0 by default and therefore inert,
+        since ``cos <= 1``) against ``max(cos - margin, 0)`` on the change side.
+        ``metric='euclid'`` is SNIIF-Net's: a squared hinge on Euclidean distance
+        both ways. That distance is taken on **L2-normalised** features, i.e.
+        ``D = sqrt(2(1 - cos)) in [0, 2]``, which is the only way one pair of
+        margins can be legal at three stages of different width and scale --
+        the raw activations coming out of a 512-wide BatchNorm+GELU stage and a
+        128-wide linear one do not live on a common scale, and a fixed theta
+        applied to both would be a different objective at each.
+
+        Both groups are averaged with equal weight, not pooled: stable plots
+        outnumber change plots roughly 4:1 and a pooled mean would be almost
+        entirely the stable term, i.e. a plain "make everything similar"
+        regulariser.
+        """
+        import torch
+        import torch.nn.functional as F
+
+        cos = F.cosine_similarity(a, b, dim=1, eps=1e-8)
+        change = ~stable
+        terms = []
+        if metric == "euclid":
+            d = (2.0 * (1.0 - cos)).clamp_min(0.0).sqrt()
+            if stable.any():
+                terms.append(torch.clamp(d[stable] - stable_margin,
+                                         min=0.0).pow(2).mean())
+            if change.any():
+                terms.append(torch.clamp(margin - d[change],
+                                         min=0.0).pow(2).mean())
+        else:
+            if stable.any():
+                terms.append(torch.clamp(1.0 - cos[stable] - stable_margin,
+                                         min=0.0).mean())
+            if change.any():
+                terms.append(torch.clamp(cos[change] - margin, min=0.0).mean())
+        if not terms:
+            return cos.new_tensor(0.0)
+        return torch.stack(terms).mean()
+
+    def _siam_mssm_loss(self, stable):
+        """SNIIF-Net's multi-scale supervision: the pair term at every depth.
+
+        The paper constrains its feature pair at 1/8, 1/4, 1/2 and 1/1 of the
+        input resolution rather than at the output alone, on the argument that a
+        change/no-change geometry imposed only where the prediction is made
+        leaves the intermediate features free to be organised by anything. The
+        tabular form of "scale" is encoder *stage*: ``[h1 (512), h2 (256)]`` and
+        optionally ``z (128)``.
+
+        Distinct from Q5's deep supervision in the one way that matters here.
+        Q5 hung a *classification* head off each stage and was flat, and the
+        reading was that a three-layer encoder under a three-level nested loss
+        is already supervised at depth. That reading says nothing about this
+        term: no loss in the model currently touches the pair geometry anywhere
+        but at ``z``, so the stages are free to interleave the two dates however
+        they like as long as the final layer can separate them. Unlike Q5 this
+        also adds **no parameters at all** -- Q5's heads existed and had to be
+        discarded at predict time; there is nothing here to discard.
+
+        Reads the intermediates cached by the forward pass, so like
+        ``_deep_sup_loss`` it must be called before any auxiliary term that runs
+        the encoder again.
+        """
+        import torch
+
+        pairs = list(self._siam_stages())
+        if self.siam_mssm_scales == "all":
+            pairs = pairs + [self._siam_pair()]
+        terms = [self._pair_margin_term(
+                     a, b, stable, metric=self.siam_mssm_metric,
+                     margin=self.siam_mssm_margin,
+                     stable_margin=self.siam_mssm_stable_margin)
+                 for a, b in pairs]
+        return torch.stack(terms).mean()
+
+    def _siam_barlow_loss(self, stable):
+        """Barlow Twins redundancy reduction over the STABLE endpoint pairs.
+
+        Zbontar et al. (2021) need two augmented views of one sample and spend a
+        lot of design effort on the augmentation policy. A stable plot supplies
+        two views for free and without any policy at all: 2018 and 2024 are two
+        genuine observations of the same unchanged ground, differing by
+        acquisition, phenology and whatever else the embedding did not manage to
+        abstract away. Driving the cross-correlation of the two views to the
+        identity asks the encoder for features that are (a) invariant to those
+        nuisances and (b) mutually decorrelated -- so what survives in
+        ``z24 - z18`` is change rather than acquisition, and the embedding does
+        not spend half its dimensions on one duplicated factor.
+
+        Stable rows only. A change plot's two years are *not* two views of one
+        thing, and pulling them together is precisely what ``_siam_cos_loss``
+        pushes apart. Note this term needs no labels beyond stable/change, which
+        is the cheapest label there is -- the property that makes it extendable
+        to an unlabelled pool later.
+        """
+        import torch
+
+        z18, z24 = self._siam_pair()
+        a, b = z18[stable], z24[stable]
+        n, d = a.shape
+        if n < 2:
+            return z18.new_tensor(0.0)
+        # Standardise each view along the BATCH dimension (the paper's
+        # normalisation), so the cross-correlation entries are correlations.
+        a = (a - a.mean(0)) / (a.std(0) + 1e-6)
+        b = (b - b.mean(0)) / (b.std(0) + 1e-6)
+        c = (a.T @ b) / n
+        on = torch.diagonal(c).add(-1.0).pow(2).sum()
+        off = c.pow(2).sum() - torch.diagonal(c).pow(2).sum()
+        return (on + self.siam_barlow_lambda * off) / d
 
     def _align_loss(self):
         """Symmetric InfoNCE between the two towers on both-present rows."""
@@ -2128,6 +3806,44 @@ class _MoETrunk:
         return _Net()
 
 
+class _PatchTower:
+    """Small conv encoder over the stacked (years x bands) Sentinel-2 patch.
+
+    Deliberately tiny. S3's verdict was that 1,344 raw pooled pixel values on
+    6,414 plots is squarely the overfitting regime and that hand-built
+    statistics beat a learned texture by a wide margin; a large CNN here would
+    re-run that experiment with more parameters and lose harder. What this tests
+    is the two things S3 did not have -- *weight sharing across the image*, so
+    the parameter count is set by the filters rather than by the pixel count,
+    and the dihedral augmentations that only exist once the patch is treated as
+    an image.
+
+    The two years enter as channels of one tensor rather than through a shared
+    encoder, so the network sees both dates in the first convolution and can
+    form a difference in filter space. That is the opposite choice from the
+    AlphaEarth tower, and deliberately: the siamese argument is about sharing
+    weights across two *comparable embedding vectors*, while here the useful
+    structure is local and spatial.
+
+    Global average pooling, not a flatten: a flatten would reintroduce exactly
+    the per-pixel parameter explosion that sank S3.
+    """
+
+    def __new__(cls, in_ch: int, out_dim: int, dim: int, dropout: float):
+        import torch.nn as nn
+
+        def block(cin, cout, stride=2):
+            return nn.Sequential(
+                nn.Conv2d(cin, cout, 3, stride=stride, padding=1, bias=False),
+                nn.BatchNorm2d(cout), nn.GELU())
+
+        return nn.Sequential(
+            block(in_ch, dim), block(dim, dim * 2), block(dim * 2, dim * 2),
+            nn.AdaptiveAvgPool2d(1), nn.Flatten(),
+            nn.Dropout(dropout), nn.Linear(dim * 2, out_dim), nn.GELU(),
+        )
+
+
 class _TwoTowerTrunk:
     """Symmetric two-tower late-fusion trunk for two sparse modalities, built lazily.
 
@@ -2191,7 +3907,12 @@ class _TwoTowerTrunk:
                 modality_dropout: float, dropout: float,
                 aef_maskable: bool = False, fusion: str = "additive",
                 tess_gate: str = "mask", dropout_tess: float | None = None,
-                tess_width: float = 1.0):
+                tess_width: float = 1.0, aef_siam_perm=None,
+                aef_siam_dim: int = 128, aef_siam_combine: str = "conc",
+                aef_siam_crfe: str = "none", aef_siam_pyramid: bool = False,
+                aef_siam_fiim: str = "none", aef_siam_hidden=(512, 256),
+                patch_tensor=None, patch_augment: bool = True,
+                patch_dim: int = 64):
         import torch
         import torch.nn as nn
 
@@ -2213,8 +3934,44 @@ class _TwoTowerTrunk:
             def __init__(self):
                 super().__init__()
                 self.d_aef, self.d_tess = d_aef, d_tess
-                self.aef_tower = tower(d_aef, dropout)
-                self.tess_tower = tower(d_tess, d_tess_drop, tess_width)
+                # aef_siam_perm swaps the AlphaEarth tower for a shared endpoint
+                # encoder (section N). Its contract is identical -- d_aef in,
+                # out_dim out -- so the gating, the modality dropout and the
+                # gate-off serving path are all untouched, and Sentinel-2 stays
+                # privileged information that is never read at inference.
+                #
+                # The permutation is carried INTO the tower rather than imposed
+                # on `aef_columns`. The shared encoder needs the block as
+                # [all _2018 | all _2024 | rest], but `feature_columns` returns
+                # the sorted order, which interleaves the years by band. Making
+                # the caller reorder would put a silent correctness requirement
+                # on every path that builds an AlphaEarth matrix -- including
+                # `stack_aef_bands`, whose raster row order is checked against
+                # the *spec* rather than against the model. Gathering here means
+                # any column order works and there is nothing to get wrong.
+                if aef_siam_perm is not None:
+                    i18, i24, rest = aef_siam_perm
+                    self.aef_tower = _SiameseTrunk(
+                        d_end=len(i18), d_extra=len(rest), out_dim=out_dim,
+                        siam_dim=aef_siam_dim, dropout=dropout,
+                        combine=aef_siam_combine, crfe=aef_siam_crfe,
+                        pyramid=aef_siam_pyramid, fiim=aef_siam_fiim,
+                        hidden=aef_siam_hidden,
+                        reorder=torch.tensor(list(i18) + list(i24) + list(rest),
+                                             dtype=torch.long))
+                else:
+                    self.aef_tower = tower(d_aef, dropout)
+                if patch_tensor is None:
+                    self.tess_tower = tower(d_tess, d_tess_drop, tess_width)
+                else:
+                    self.tess_tower = _PatchTower(
+                        in_ch=patch_tensor.shape[1] * patch_tensor.shape[2],
+                        out_dim=out_dim, dim=patch_dim, dropout=d_tess_drop)
+                    # Plain attribute, not a buffer: this is fixed data, not a
+                    # parameter, and registering ~200M values would put them in
+                    # every state_dict and snapshot the early-stopping loop takes.
+                    self.patches = patch_tensor
+                    self.patch_augment = patch_augment
                 self.modality_dropout = modality_dropout
                 self.aef_maskable = aef_maskable
                 self.fusion = fusion
@@ -2235,7 +3992,36 @@ class _TwoTowerTrunk:
                 ma = x[:, self.d_aef + self.d_tess:self.d_aef + self.d_tess + 1]
                 mt = x[:, self.d_aef + self.d_tess + 1:self.d_aef + self.d_tess + 2]
                 ra = self.aef_tower(xa)
-                rt = self.tess_tower(xt)
+                if getattr(self, "patches", None) is None:
+                    rt = self.tess_tower(xt)
+                else:
+                    # Last column is the raw row index into `patches` (-1 = this
+                    # plot has no imagery). Absent rows are gathered from row 0
+                    # and then gated out by mt exactly as a zero-imputed columnar
+                    # block would be, so they cost a forward pass and nothing else.
+                    # Gather on the CPU where `patches` lives, then move only the
+                    # batch to the device -- indexing a CPU tensor with a CUDA
+                    # index is an error, and moving the whole array to the GPU
+                    # would defeat holding it as uint8 in the first place.
+                    idx = x[:, -1].long().clamp_min(0).cpu()
+                    img = self.patches[idx].to(x.device, torch.float32) / 255.0
+                    img = img.flatten(1, 2)          # (n, years*bands, H, W)
+                    if self.training and self.patch_augment:
+                        # The eight dihedral symmetries. A land-cover transition
+                        # is invariant to them and the labels are unchanged, so
+                        # this is free extra data of exactly the kind S3's
+                        # flattened-pixel test could not use -- a flat column
+                        # vector has no geometry to reflect. Applied per batch
+                        # rather than per row: one gather stays contiguous, and
+                        # over 30 epochs the batch still sees every orientation.
+                        if torch.rand(()) < 0.5:
+                            img = torch.flip(img, dims=[-1])
+                        if torch.rand(()) < 0.5:
+                            img = torch.flip(img, dims=[-2])
+                        k = int(torch.randint(4, ()))
+                        if k:
+                            img = torch.rot90(img, k, dims=[-2, -1])
+                    rt = self.tess_tower(img)
                 # AlphaEarth gate: the mask, or a constant 1 when it is the
                 # guaranteed base (never gated, never dropped).
                 ga = ma if self.aef_maskable else torch.ones_like(ma)
@@ -2267,6 +4053,301 @@ class _TwoTowerTrunk:
                 if self.fusion in ("gated_mean", "film"):
                     fused = fused / (ga + gt).clamp_min(1.0)
                 return fused
+
+        return _Net()
+
+
+class _SiameseTrunk:
+    """Shared-encoder trunk over the two endpoint years, built lazily.
+
+    The input is ``[x18 | x24 | extra]`` (packed by ``_prepare``): ``d_end``
+    columns for 2018, *the same features in the same order* for 2024, then
+    ``d_extra`` columns that are not per-year (change scalars, a Sentinel-2
+    detail block) and bypass the encoder. One encoder ``f`` reads both dates::
+
+        z18 = f(x18)        z24 = f(x24)
+
+    the Siamese change-detection structure of Daudt et al. (2018) written for
+    tabular embeddings rather than image patches. Two properties follow, and
+    they are the reason to try it against the flat ``wide`` trunk:
+
+    * **Half the encoder parameters at the same input width.** The flat trunk
+      learns separate first-layer weights for the 2018 block, the 2024 block and
+      the diff block; this learns one set used three times. With 6.4k plots and
+      46 examples of the rarest transition, parameter count is a live constraint
+      -- the learning curves put the model at +0.026 change-F1 per doubling of
+      labels, i.e. squarely in the data-limited regime where sharing pays.
+    * **Year symmetry by construction.** A flat trunk can at best *learn* that
+      ``A07_2018`` and ``A07_2024`` are one measurement at two dates. Here it is
+      told. ``_prepare`` standardises both years with pooled statistics for the
+      same reason.
+
+    Both dates go through the encoder in a **single stacked call**, so its
+    BatchNorm sees one distribution over 2018-and-2024 rows rather than two
+    per-year distributions. Running them separately would give each year its own
+    batch statistics and silently re-centre a real between-year shift to zero --
+    which is the signal. The last encoder layer is deliberately **linear**: a
+    GELU there would push the embedding almost entirely into the non-negative
+    orthant and compress the cosine the auxiliary losses act on into a narrow
+    positive band.
+
+    ``combine`` sets what the head reads::
+
+        diff:  [z24 - z18, |z24 - z18|, cos(z18, z24)]
+        conc:  [z18, z24, z24 - z18, |z24 - z18|, cos(z18, z24)]
+
+    ``diff`` is the pure change representation -- a stable plot maps near zero
+    and the head cannot tell stable Nature from stable Artificial. That is fatal
+    for *this* target, whose classes are ``from -> to`` and not merely
+    changed/unchanged, so ``conc`` keeps the endpoint states as well. The cosine
+    is carried as an explicit feature because it is the statistic the auxiliary
+    losses supervise, and because the analogous raw-embedding scalar already
+    earned its place (``diff+cos`` beat plain ``diff``, 0.6639 vs 0.6567).
+
+    ``last_z18`` / ``last_z24`` are kept for the cosine and Barlow losses, which
+    need the pair before it is combined. ``last_h`` keeps the per-stage
+    intermediates for the deep-supervision term (section Q).
+
+    Three options here transcribe modules from Zhang et al.'s burned-area Swin
+    network onto this tabular encoder, which is the only form they can take
+    without an image grid (section Q):
+
+    ``crfe`` -- their Change-Region Feature Enhancement. ``"sum"`` adds the
+    *elementwise sum* ``z18 + z24`` to the head's block, so the pair is read
+    through both of their fusion operators (add and subtract) rather than the
+    difference alone; ``"attn"`` puts a squeeze-and-excitation gate over the
+    assembled block, which is their channel attention with the spatial-squeeze
+    step dropped because there are no spatial dims to squeeze; ``"full"`` is
+    both, i.e. their module as published minus the spatial branch.
+
+    ``pyramid`` -- their pyramid up-sampling decoder. There is no resolution to
+    recover here, so what survives is the *depth* half of the idea: the two
+    hidden stages are projected to ``siam_dim`` and folded into the embedding
+    bottom-to-top (``z + P2 h2 + P1 h1``), zero-initialised so an untrained
+    pyramid is exactly the plain encoder and every logit it moves has to be paid
+    for. Note this changes ``z`` itself, which is what the cosine and Barlow
+    terms read -- deliberately, since the paper predicts from the fused map.
+
+    ``fiim`` is from a different paper (SNIIF-Net, Sci Rep 2025) and is section
+    Q10: their Feature Information Interaction Module, which lets the two
+    branches exchange information *before* the difference is taken. Their form
+    is spatial attention over feature maps and has no tabular analogue, but the
+    cross-branch part does -- ``z18 * (1 + tanh(W [z18 | z24]))``, one shared
+    ``W`` used with the inputs swapped for the other date, zero-initialised. The
+    property being tested is placement, not the gate: ``crfe='attn'`` already
+    gates, but downstream of the subtraction, where it can no longer change
+    ``z24 - z18``, the cosine feature or what the pair losses see. Note the
+    single-date entry point ``encode_single`` cannot apply it (there is no
+    pair), which is correct rather than a gap -- the state-pretraining phase
+    trains ``enc``, and the interaction is not part of ``enc``.
+    ``fiim='self'`` is its control: the same gate at the same size reading its
+    own date twice, so only the cross-branch information is removed.
+    """
+
+    def __new__(cls, d_end: int, d_extra: int, out_dim: int, siam_dim: int,
+                dropout: float, combine: str = "conc", year_adapter: str = "none",
+                reorder=None, crfe: str = "none", pyramid: bool = False,
+                fiim: str = "none", hidden=(512, 256)):
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+
+        if combine not in ("diff", "conc"):
+            raise ValueError(f"Unknown siamese combine: {combine}")
+        if year_adapter not in ("none", "input", "output"):
+            raise ValueError(f"Unknown siamese year_adapter: {year_adapter}")
+        if crfe not in ("none", "sum", "attn", "full", "rand", "randattn"):
+            raise ValueError(f"Unknown siamese crfe: {crfe}")
+        if fiim not in ("none", "cross", "self"):
+            raise ValueError(f"Unknown siamese fiim: {fiim}")
+
+        d_comb = (2 if combine == "diff" else 4) * siam_dim + 1
+        if crfe in ("sum", "full", "rand", "randattn"):
+            d_comb += siam_dim
+
+        class _Net(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.d_end, self.d_extra, self.combine = d_end, d_extra, combine
+                self.year_adapter = year_adapter
+                # Buffer, not a plain attribute, so it moves with .to(device)
+                # and survives a state_dict round-trip with the model.
+                if reorder is None:
+                    self.reorder = None
+                else:
+                    self.register_buffer("reorder", reorder)
+                # Pseudo-siamese calibration (Daudt et al.'s siamese vs
+                # pseudo-siamese distinction, at the smallest size that tests it).
+                # A fully shared encoder must read an absolute land-cover state
+                # through one map for both dates; a flat trunk gets a separate
+                # first-layer weight block per year and can absorb a sensor or
+                # phenology offset there. N9 traced the stable-built-up
+                # regression to exactly that. This restores per-year calibration
+                # with a DIAGONAL affine -- 2 x d_end parameters per year, not a
+                # second encoder -- so the weight sharing that produced the
+                # focus-class gains is kept and only the calibration is freed.
+                # Identity-initialised, so an untrained adapter is exactly the
+                # fully-shared model and any deviation has to pay for itself.
+                if year_adapter == "input":
+                    self.g18 = nn.Parameter(torch.ones(d_end))
+                    self.b18 = nn.Parameter(torch.zeros(d_end))
+                    self.g24 = nn.Parameter(torch.ones(d_end))
+                    self.b24 = nn.Parameter(torch.zeros(d_end))
+                elif year_adapter == "output":
+                    self.g18 = nn.Parameter(torch.ones(siam_dim))
+                    self.b18 = nn.Parameter(torch.zeros(siam_dim))
+                    self.g24 = nn.Parameter(torch.ones(siam_dim))
+                    self.b24 = nn.Parameter(torch.zeros(siam_dim))
+                stack, prev = [], d_end
+                for width in hidden:
+                    stack += [nn.Linear(prev, width), nn.BatchNorm1d(width),
+                              nn.GELU(), nn.Dropout(dropout)]
+                    prev = width
+                stack.append(nn.Linear(prev, siam_dim))  # linear on purpose
+                self.enc = nn.Sequential(*stack)
+                self.mixer = nn.Sequential(
+                    nn.Linear(d_comb + d_extra, 512), nn.BatchNorm1d(512),
+                    nn.GELU(), nn.Dropout(dropout),
+                    nn.Linear(512, out_dim), nn.GELU(),
+                )
+                # Everything below is built AFTER enc and mixer on purpose: the
+                # modules above then draw the same initialisation from the seeded
+                # RNG whether or not the section-Q options are on, so a flat
+                # result is the option's and not a reshuffled init's.
+                self.crfe, self.pyramid = crfe, pyramid
+                #: Hidden widths of `enc`, in order. Read by the deep-supervision
+                #: heads, which live on the model rather than in here.
+                self.stage_dims = tuple(hidden)
+                if crfe in ("attn", "full", "randattn"):
+                    self.se = _SEInput(d_comb + d_extra)
+                if crfe in ("rand", "randattn"):
+                    # The CONTROL for the `sum` arm. z18 + z24 is a fixed linear
+                    # map of a block that already contains z18 and z24, so it
+                    # cannot change what the mixer is able to compute -- only how
+                    # the optimiser gets there, and how wide the first layer is.
+                    # A fixed random linear view of the same pair at the same
+                    # width is the same kind of object with none of CRFE's
+                    # meaning, so if it reproduces the effect then the effect is
+                    # width and conditioning, not the sum operator.
+                    self.register_buffer("rand_mix",
+                                         torch.randn(2 * siam_dim, siam_dim)
+                                         / (2 * siam_dim) ** 0.5)
+                if pyramid:
+                    # Zero-initialised, so training starts at the plain encoder.
+                    self.pyr = nn.ModuleList(
+                        [nn.Linear(dim, siam_dim) for dim in self.stage_dims])
+                    for layer in self.pyr:
+                        nn.init.zeros_(layer.weight)
+                        nn.init.zeros_(layer.bias)
+                self.fiim = fiim
+                if fiim != "none":
+                    # ONE gate, applied to both dates with the two inputs
+                    # swapped, so the module is siamese in the same sense the
+                    # encoder is: swapping 2018 and 2024 swaps the outputs and
+                    # nothing else. Zero-initialised -> tanh(0) = 0 -> the
+                    # multiplier is exactly 1, so an untrained FIIM is exactly
+                    # the plain encoder and anything it moves has to be paid for
+                    # (the Q4 convention).
+                    self.fiim_gate = nn.Linear(2 * siam_dim, siam_dim)
+                    nn.init.zeros_(self.fiim_gate.weight)
+                    nn.init.zeros_(self.fiim_gate.bias)
+
+            def _run_enc(self, x):
+                """``enc`` run stage by stage: (z, [h1, h2]).
+
+                Sliced rather than restructured into a ModuleList, so the layers,
+                their init order and the dropout draws are bit-identical to the
+                published trunk and only the extra terms differ.
+                """
+                h1 = self.enc[0:4](x)
+                h2 = self.enc[4:8](h1)
+                z = self.enc[8:](h2)
+                if self.pyramid:
+                    # Bottom-to-top, deepest first: z + P2 h2, then + P1 h1.
+                    z = z + self.pyr[1](h2) + self.pyr[0](h1)
+                return z, [h1, h2]
+
+            def encode_single(self, x, year: str = "2018"):
+                """Encode ONE date's block -- the single-date entry point.
+
+                This is what makes an external state label usable: ``f`` never
+                needed the pair, only the classifier head above it did. The
+                caller is responsible for handing over a block already
+                standardised with the endpoint statistics the paired path uses,
+                or the encoder sees a different distribution than it was
+                trained on.
+                """
+                if self.year_adapter == "input":
+                    g, b = ((self.g18, self.b18) if year == "2018"
+                            else (self.g24, self.b24))
+                    x = g * x + b
+                z, _ = self._run_enc(x)
+                if self.year_adapter == "output":
+                    g, b = ((self.g18, self.b18) if year == "2018"
+                            else (self.g24, self.b24))
+                    z = g * z + b
+                return z
+
+            def forward(self, x):
+                n = x.shape[0]
+                if self.reorder is not None:
+                    x = x[:, self.reorder]
+                x18 = x[:, :self.d_end]
+                x24 = x[:, self.d_end:2 * self.d_end]
+                if self.year_adapter == "input":
+                    x18 = self.g18 * x18 + self.b18
+                    x24 = self.g24 * x24 + self.b24
+                z, hs = self._run_enc(torch.cat([x18, x24], dim=0))  # one BN pop.
+                z18, z24 = z[:n], z[n:]
+                # Per-stage pair, for the deep-supervision heads.
+                self.last_h = [(h[:n], h[n:]) for h in hs]
+                if self.year_adapter == "output":
+                    # After the encoder the cosine and Barlow terms read these,
+                    # so a per-year affine here also rescales what those losses
+                    # see -- the reason 'input' is the default reading of N10.
+                    z18 = self.g18 * z18 + self.b18
+                    z24 = self.g24 * z24 + self.b24
+                if self.fiim != "none":
+                    # Feature information interaction: each date re-weighted by a
+                    # gate that has seen BOTH dates. Deliberately upstream of the
+                    # subtraction and of last_z18/last_z24, so it changes the
+                    # difference, the cosine feature AND what the pair losses
+                    # read -- which is the whole difference from crfe='attn',
+                    # whose gate sits on the assembled block downstream of all
+                    # three. The paper predicts from its interacted features for
+                    # the same reason.
+                    #
+                    # 'self' is the CONTROL: each date's gate reads that date
+                    # twice instead of the pair. Identical parameter count,
+                    # identical nonlinearity, identical init draw -- the only
+                    # thing removed is the cross-branch information, which is the
+                    # one thing the module claims to add.
+                    other18 = z18 if self.fiim == "self" else z24
+                    other24 = z24 if self.fiim == "self" else z18
+                    e18 = z18 * (1.0 + torch.tanh(
+                        self.fiim_gate(torch.cat([z18, other18], dim=1))))
+                    e24 = z24 * (1.0 + torch.tanh(
+                        self.fiim_gate(torch.cat([z24, other24], dim=1))))
+                    z18, z24 = e18, e24
+                d = z24 - z18
+                cos = F.cosine_similarity(z18, z24, dim=1, eps=1e-8).unsqueeze(1)
+                parts = ([z18, z24, d, d.abs(), cos] if self.combine == "conc"
+                         else [d, d.abs(), cos])
+                if self.crfe in ("rand", "randattn"):
+                    parts.append(torch.cat([z18, z24], dim=1) @ self.rand_mix)
+                if self.crfe in ("sum", "full"):
+                    # CRFE's other fusion operator. Linear in (z18, z24) and so
+                    # spanned by the block already -- exactly as the raw AlphaEarth
+                    # `diff` block is, which is worth -0.048 change-F1 to remove
+                    # from the flat trunk. That is the precedent for testing it.
+                    parts.append(z18 + z24)
+                if self.d_extra:
+                    parts.append(x[:, 2 * self.d_end:])
+                self.last_z18, self.last_z24 = z18, z24
+                block = torch.cat(parts, dim=1)
+                if self.crfe in ("attn", "full", "randattn"):
+                    block = self.se(block)
+                return self.mixer(block)
 
         return _Net()
 

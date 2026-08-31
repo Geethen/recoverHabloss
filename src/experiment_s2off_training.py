@@ -45,7 +45,8 @@ import pandas as pd
 from ablate_s2_architecture import _read, rungs
 from model_zoo import HierarchicalSoftmaxNN
 from project_paths import project_data_dir
-from twotower_lab import AEF_MASK, BASE, S2_MASK, load_context, score_probs
+from twotower_lab import (AEF_MASK, BASE, S2_MASK, load_context,
+                          s2_base_columns, score_probs)
 
 
 def gate_off_cv(view, cols, kwargs, seeds):
@@ -84,7 +85,7 @@ def main() -> None:
     ctx = load_context()
     view = ctx.view("full")
     seeds = list(range(args.n_seeds))
-    aef, s2 = ctx.aef_cols, ctx.s2_stat_cols
+    aef, s2 = ctx.aef_cols, s2_base_columns(ctx.s2_stat_cols)
     print(f"{len(view.target):,} plots | aef={len(aef)} s2={len(s2)} | "
           f"{args.n_seeds} seeds | scored on the GATE-OFF read", flush=True)
 

@@ -1,0 +1,582 @@
+<title>Phoenix over Oslo</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ground: #e9eef1;
+    --card: #ffffff;
+    --card-2: #f4f7f9;
+    --ink: #101820;
+    --ink-2: #55636e;
+    --ink-3: #8493a0;
+    --rule: #cfd9e0;
+    --rule-2: #e3eaee;
+    --accent: #b45c07;
+    --accent-soft: rgba(180, 92, 7, 0.10);
+    --shadow: 0 1px 2px rgba(16, 24, 32, .06), 0 8px 24px rgba(16, 24, 32, .06);
+    /* Map colours are data, not decoration: identical in both themes so the
+       legend means the same thing wherever the page is read. */
+    --kept: #961e1e;
+    --added: #ff8c00;
+    --removed: #3c78dc;
+    --stable: #b9c4cc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground: #0d1216;
+      --card: #151c22;
+      --card-2: #1b242b;
+      --ink: #e7eef3;
+      --ink-2: #9aa9b5;
+      --ink-3: #6b7c88;
+      --rule: #29343d;
+      --rule-2: #202a32;
+      --accent: #ff9f36;
+      --accent-soft: rgba(255, 159, 54, 0.14);
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .35);
+      --stable: #55636e;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground: #0d1216;
+    --card: #151c22;
+    --card-2: #1b242b;
+    --ink: #e7eef3;
+    --ink-2: #9aa9b5;
+    --ink-3: #6b7c88;
+    --rule: #29343d;
+    --rule-2: #202a32;
+    --accent: #ff9f36;
+    --accent-soft: rgba(255, 159, 54, 0.14);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px rgba(0, 0, 0, .35);
+    --stable: #55636e;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* The host paints its own ground behind the page; give html the
+     token too so no band of it shows past the content. */
+  html { background: var(--ground); }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+                 "Helvetica Neue", sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+                 "Liberation Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px 80px; }
+
+  /* ---- masthead ------------------------------------------------------- */
+  header {
+    padding: 56px 0 28px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-size: clamp(30px, 4.6vw, 46px);
+    line-height: 1.05;
+    letter-spacing: -.022em;
+    font-weight: 660;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 18px;
+    line-height: 1.5;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 620; }
+
+  /* ---- the numbers ---------------------------------------------------- */
+  .figures {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 34px 0 0;
+  }
+  .fig { background: var(--card); padding: 16px 18px 18px; }
+  .fig dt {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 8px;
+  }
+  .fig dd {
+    margin: 0;
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 25px;
+    letter-spacing: -.02em;
+    line-height: 1.1;
+  }
+  .fig .note { font-size: 12.5px; color: var(--ink-2); margin-top: 5px;
+                letter-spacing: 0; font-family: inherit; }
+  .up { color: var(--added); }
+  .down { color: var(--removed); }
+
+  /* ---- control bar ---------------------------------------------------- */
+  .controls {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--rule);
+    margin: 40px -24px 0;
+    padding: 12px 24px;
+  }
+  .controls-inner {
+    max-width: 1180px; margin: 0 auto;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px;
+  }
+  .picker { display: flex; align-items: center; gap: 9px; }
+  .picker > span {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px; letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .chips { display: flex; gap: 4px; flex-wrap: wrap; }
+  .chip {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 5px 10px;
+    border: 1px solid var(--rule);
+    background: var(--card);
+    color: var(--ink-2);
+    border-radius: 2px;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .chip:hover { border-color: var(--ink-3); color: var(--ink); }
+  .chip[aria-pressed="true"] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .chip:focus-visible, .swipe:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  /* ---- comparator ----------------------------------------------------- */
+  section { margin-top: 46px; }
+  .section-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 600; color: var(--ink-2); margin: 0;
+  }
+  .hint { font-size: 13.5px; color: var(--ink-3); margin: 0; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 22px;
+  }
+  figure {
+    margin: 0;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .swipe {
+    position: relative;
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+    cursor: ew-resize;
+    background: var(--card-2);
+    touch-action: none;
+    /* Nearest-neighbour: these are 10 m pixels and smoothing them would show a
+       boundary precision the data does not have. */
+    image-rendering: pixelated;
+  }
+  .swipe.wide { aspect-ratio: 1722 / 1716; cursor: ew-resize; }
+  .swipe img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    image-rendering: pixelated;
+    user-select: none; -webkit-user-drag: none;
+  }
+  .swipe .right-layer { clip-path: inset(0 0 0 var(--split, 50%)); }
+  .divider {
+    position: absolute; top: 0; bottom: 0;
+    left: var(--split, 50%);
+    width: 2px;
+    background: rgba(255, 255, 255, .9);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
+    pointer-events: none;
+  }
+  .divider::after {
+    content: "";
+    position: absolute; top: 50%; left: 50%;
+    width: 26px; height: 26px;
+    transform: translate(-50%, -50%);
+    border: 2px solid rgba(255, 255, 255, .95);
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
+    background: rgba(0, 0, 0, .18);
+  }
+  .swipe .tag {
+    position: absolute; bottom: 8px;
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 2px;
+    background: rgba(6, 10, 14, .72); color: #fff;
+    pointer-events: none;
+  }
+  .swipe .tag.l { left: 8px; }
+  .swipe .tag.r { right: 8px; }
+
+  figcaption {
+    padding: 11px 14px 13px;
+    border-top: 1px solid var(--rule-2);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .coord {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px; color: var(--ink-3);
+  }
+  .bars { display: flex; align-items: center; gap: 12px; }
+  .bars b {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px; font-weight: 500; color: var(--ink-2);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 1px; display: inline-block; }
+
+  /* ---- legend --------------------------------------------------------- */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 8px 20px;
+    padding: 13px 16px;
+    background: var(--card); border: 1px solid var(--rule); border-radius: 3px;
+    margin-top: 16px;
+  }
+  .legend span {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px; color: var(--ink-2);
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+
+  /* ---- prose ---------------------------------------------------------- */
+  .prose { max-width: 68ch; }
+  .prose p { color: var(--ink-2); }
+  .prose p strong { color: var(--ink); font-weight: 620; }
+  table {
+    border-collapse: collapse; width: 100%; font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .scroller { overflow-x: auto; margin-top: 14px; max-width: 900px;
+              background: var(--card); border: 1px solid var(--rule);
+              border-radius: 3px; padding: 4px 6px 6px; }
+  .verdict.prose { max-width: 74ch; }
+  th, td { text-align: right; padding: 9px 12px; border-bottom: 1px solid var(--rule-2); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px; letter-spacing: .11em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+  .verdict {
+    margin-top: 26px; padding: 18px 20px;
+    border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 3px 3px 0;
+  }
+  .verdict p { margin: 0; color: var(--ink-2); }
+  .verdict p + p { margin-top: 10px; }
+
+  footer {
+    margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-size: 13px; color: var(--ink-3);
+  }
+  code {
+    font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .89em; background: var(--card-2); padding: 1px 5px;
+    border-radius: 2px; border: 1px solid var(--rule-2);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Oslo AOI &middot; 1722 &times; 1716 px &middot; 10 m &middot; EPSG:32632</p>
+    <h1>What Phoenix does to the Oslo change map</h1>
+    <p class="standfirst">Phoenix (ECCV 2026) refines a coarse mask against the
+      image it came from. Run over the deployed transition map, it
+      <strong>adds change everywhere</strong> &mdash; and its boundaries really
+      do land on edges the input map missed. Drag any panel to compare.</p>
+
+    <dl class="figures">
+      <div class="fig">
+        <dt>Input change</dt>
+        <dd>16,676</dd>
+        <div class="note">pixels, 0.56% of the AOI</div>
+      </div>
+      <div class="fig">
+        <dt>Crop arm</dt>
+        <dd class="up">+62%</dd>
+        <div class="note">27,056 px &middot; IoU 0.366</div>
+      </div>
+      <div class="fig">
+        <dt>Same, ViT-H</dt>
+        <dd class="up">+146%</dd>
+        <div class="note">the bigger model draws bigger</div>
+      </div>
+      <div class="fig">
+        <dt>Boundary alignment</dt>
+        <dd>1.49</dd>
+        <div class="note">from 1.43; 1.45 for matched-area growth</div>
+      </div>
+      <div class="fig">
+        <dt>Map's own seed floor</dt>
+        <dd>0.84</dd>
+        <div class="note">any edit is read against this</div>
+      </div>
+    </dl>
+  </header>
+
+  <div class="controls">
+    <div class="controls-inner">
+      <div class="picker">
+        <span>Left</span>
+        <div class="chips" id="left-chips"></div>
+      </div>
+      <div class="picker">
+        <span>Right</span>
+        <div class="chips" id="right-chips"></div>
+      </div>
+    </div>
+  </div>
+
+  <section>
+    <div class="section-head">
+      <h2>Whole AOI</h2>
+      <p class="hint">Change is drawn in red over the Sentinel-2 2024 composite Phoenix was shown.</p>
+    </div>
+    <figure>
+      <div class="swipe wide" id="overview" tabindex="0" role="slider"
+           aria-label="Overview comparison split" aria-valuemin="0"
+           aria-valuemax="100" aria-valuenow="50"></div>
+      <figcaption>
+        <span class="coord">full extent &middot; displayed at 1:2</span>
+        <span class="coord">&#8592; &#8594; to move the split</span>
+      </figcaption>
+    </figure>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--kept)"></i>change in both</span>
+      <span><i class="dot" style="background:var(--added)"></i>added by Phoenix</span>
+      <span><i class="dot" style="background:var(--removed)"></i>removed by Phoenix</span>
+      <span><i class="dot" style="background:var(--stable)"></i>stable in both</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Where the two maps disagree most</h2>
+      <p class="hint">Windows ranked by local disagreement density, not sampled at random.</p>
+    </div>
+    <div class="grid" id="windows"></div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Every way it was run</h2>
+      <p class="hint">Oslo has no labelled plots, so these are structure, not accuracy.</p>
+    </div>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Regime</th><th>Change px</th><th>&Delta;</th><th>IoU with input</th><th>Alignment</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Input map</td><td class="num">16,676</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">1.425</td></tr>
+          <tr><td>Crop, EfficientViT-XL1 &mdash; each blob in a 256 px window</td><td class="num">27,056</td><td class="num up">+62%</td><td class="num">0.366</td><td class="num">1.494</td></tr>
+          <tr><td>Crop, ViT-H &mdash; the paper's headline model</td><td class="num">41,025</td><td class="num up">+146%</td><td class="num">0.288</td><td class="num">1.538</td></tr>
+          <tr><td>Tile &mdash; change mask on a 1024 px tile</td><td class="num">61,695</td><td class="num up">+270%</td><td class="num">0.099</td><td class="num">1.574</td></tr>
+          <tr><td>Semantic &mdash; the paper's own protocol</td><td class="num">89,514</td><td class="num up">+437%</td><td class="num">0.113</td><td class="num">1.358</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="verdict prose">
+      <p><strong>Negative for deployment, and it fails upward.</strong> Guided
+        filtering and every other spatial post-process tried here <em>deleted</em>
+        change, because a marginal class loses a neighbourhood vote. Phoenix does
+        not vote &mdash; it draws. Handed a 6-pixel blob it returns the object it
+        thinks is there, and at 10 m there is no object.</p>
+      <p>The change class is 992 components with a <strong>median of 6 px</strong>.
+        The 650 under 10 px are grown 2.3&times; and supply <strong>57% of every
+        added pixel</strong>; above 30 px the method holds its area and moves the
+        boundary instead, reaching IoU 0.46&ndash;0.66. If a refiner is ever
+        wanted here it has to be size-gated to those.</p>
+      <p>Capacity does not help, it hurts: swapping EfficientViT for the paper's
+        <strong>ViT-H</strong> grows those same sub-10 px blobs
+        <strong>8&times;</strong> instead of 2.3&times;. A stronger encoder is more
+        confident about the object it is hallucinating, which is the clearest
+        evidence that the problem is the scale of the thing being refined rather
+        than the refiner.</p>
+      <p>The alignment gain is real and controlled: 1.425 &rarr; 1.494, against
+        1.448 for growing the input uniformly to the identical area and 1.004 for
+        the same blobs relocated at random. Roughly two thirds of it is content.
+        It costs agreement with its own input of 0.366 &mdash; against a map that
+        reproduces itself across seed blocks at 0.842.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>Rasters, delta layers and the stretched backdrop are written for QGIS under
+      <code>data/inference/phoenix_oslo_explore/</code>. Method and controls:
+      section U5 of <code>docs/research/S2_DETAIL_RESEARCH.md</code>. Phoenix is
+      deterministic here &mdash; two independent runs agreed on every pixel.</p>
+  </footer>
+</div>
+
+<script>
+const DATA = __PHOENIX_DATA__;
+
+const LABELS = {
+  imagery: "Sentinel-2 2024",
+  input: "Deployed map",
+  delta: "Delta",
+};
+const label = k => LABELS[k] || k;
+
+const keys = Object.keys(DATA.windows[0].panels);
+let leftKey = "input";
+let rightKey = keys.find(k => k !== "input" && k !== "imagery" && k !== "delta") || "delta";
+
+function buildChips(host, get, set) {
+  host.innerHTML = "";
+  keys.forEach(k => {
+    const b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.textContent = label(k);
+    b.setAttribute("aria-pressed", String(get() === k));
+    b.addEventListener("click", () => { set(k); render(); });
+    host.appendChild(b);
+  });
+}
+
+function makeSwipe(el, panels) {
+  el.innerHTML = "";
+  const a = document.createElement("img");
+  const b = document.createElement("img");
+  b.className = "right-layer";
+  a.alt = label(leftKey); b.alt = label(rightKey);
+  a.src = panels[leftKey]; b.src = panels[rightKey];
+  const div = document.createElement("div");
+  div.className = "divider";
+  const tl = document.createElement("span");
+  tl.className = "tag l"; tl.textContent = label(leftKey);
+  const tr = document.createElement("span");
+  tr.className = "tag r"; tr.textContent = label(rightKey);
+  el.append(a, b, div, tl, tr);
+
+  const set = pct => {
+    const v = Math.max(0, Math.min(100, pct));
+    el.style.setProperty("--split", v + "%");
+    el.setAttribute("aria-valuenow", Math.round(v));
+  };
+  set(Number(el.dataset.split || 50));
+  const fromEvent = e => {
+    const r = el.getBoundingClientRect();
+    const v = ((e.clientX - r.left) / r.width) * 100;
+    el.dataset.split = v; set(v);
+  };
+  let dragging = false;
+  el.addEventListener("pointerdown", e => {
+    dragging = true; el.setPointerCapture(e.pointerId); fromEvent(e);
+  });
+  el.addEventListener("pointermove", e => { if (dragging) fromEvent(e); });
+  el.addEventListener("pointerup", () => { dragging = false; });
+  el.addEventListener("pointercancel", () => { dragging = false; });
+  el.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 10 : 2;
+    if (e.key === "ArrowLeft") { e.preventDefault(); const v = Number(el.dataset.split || 50) - step; el.dataset.split = v; set(v); }
+    if (e.key === "ArrowRight") { e.preventDefault(); const v = Number(el.dataset.split || 50) + step; el.dataset.split = v; set(v); }
+  });
+}
+
+function render() {
+  buildChips(document.getElementById("left-chips"), () => leftKey, k => leftKey = k);
+  buildChips(document.getElementById("right-chips"), () => rightKey, k => rightKey = k);
+
+  const ov = document.getElementById("overview");
+  makeSwipe(ov, DATA.overview);
+
+  const host = document.getElementById("windows");
+  host.innerHTML = "";
+  DATA.windows.forEach(w => {
+    const fig = document.createElement("figure");
+    const sw = document.createElement("div");
+    sw.className = "swipe";
+    sw.tabIndex = 0;
+    sw.setAttribute("role", "slider");
+    sw.setAttribute("aria-label", `Comparison at row ${w.row}, column ${w.col}`);
+    sw.setAttribute("aria-valuemin", "0");
+    sw.setAttribute("aria-valuemax", "100");
+    fig.appendChild(sw);
+
+    const cap = document.createElement("figcaption");
+    const coord = document.createElement("span");
+    coord.className = "coord";
+    // The escaped middle dot rather than a literal one: the published page's charset is
+    // set by the host wrapper, and the same file opened straight off disk has
+    // no <meta charset>, where a literal non-ASCII byte renders as mojibake.
+    coord.textContent = `row ${w.row} \u00B7 col ${w.col} \u00B7 ${DATA.window_px} px`;
+    const bars = document.createElement("span");
+    bars.className = "bars";
+    bars.innerHTML =
+      `<b><i class="dot" style="background:var(--kept)"></i>${w.stats.kept.toLocaleString()}</b>` +
+      `<b><i class="dot" style="background:var(--added)"></i>${w.stats.added.toLocaleString()}</b>` +
+      `<b><i class="dot" style="background:var(--removed)"></i>${w.stats.removed.toLocaleString()}</b>`;
+    cap.append(coord, bars);
+    fig.appendChild(cap);
+    host.appendChild(fig);
+    makeSwipe(sw, w.panels);
+  });
+}
+
+render();
+</script>

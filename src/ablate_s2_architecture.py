@@ -48,7 +48,7 @@ import infer_s2
 from model_zoo import HierarchicalSoftmaxNN
 from project_paths import project_data_dir
 from twotower_lab import (AEF_MASK, BASE, S2_MASK, Context, View, load_context,
-                          score_probs)
+                          s2_base_columns, score_probs)
 
 KEEP = infer_s2.MC_KEEP
 OSLO_PX = 2_954_952   # the AOI every deployed map has been judged on
@@ -60,7 +60,7 @@ OSLO_PX = 2_954_952   # the AOI every deployed map has been judged on
 def rungs(ctx: Context) -> list[dict]:
     """Ordered ladder; each entry is the previous one plus a single change."""
     aef = ctx.aef_cols
-    s2 = ctx.s2_stat_cols
+    s2 = s2_base_columns(ctx.s2_stat_cols)   # the published seven-channel block
 
     def tt(**over):
         """Two-tower kwargs; `over` is the one thing this rung changes."""

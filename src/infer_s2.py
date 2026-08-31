@@ -75,8 +75,8 @@ from infer_cities import CITY_AOIS, CLASS_COLORS, load_year_embeddings
 from infer_twotower import MERGED_COLORS, NODATA, write_class_raster
 from model_zoo import DEFAULT_INPUT, HierarchicalSoftmaxNN, to_merged_label
 from project_paths import project_data_dir
-from twotower_lab import (S2_MASK, S2_SUBSET_DESC, S2_SUBSETS, attach_s2,
-                          s2_subset_columns)
+from twotower_lab import (S2_MASK, S2_SUBSET_DESC, S2_SUBSETS, _state_pool,
+                          attach_s2, s2_base_columns, s2_subset_columns)
 
 YEARS = (2018, 2024)
 MC_PASSES = 16   # only for --mc-sampling, the legacy reproduction path
@@ -391,6 +391,15 @@ _MODEL_INIT_KEYS = (
     "mask_column", "modality_dropout", "tower_dim", "aef_mask_column", "fusion",
     "tess_gate", "dropout_tess", "tess_width", "align_weight", "align_temperature",
     "distill_weight", "distill_temperature", "endpoint_weight",
+    # The siamese block. Absent from this tuple a cached model is REBUILT as a
+    # flat two-tower and the state_dict load then fails on key names -- loudly,
+    # but only on the second run of a recipe, since the first writes the cache
+    # rather than reading it. Every siam_* recipe here needs them.
+    "aef_siam", "siam_dim", "siam_combine", "siam_year_adapter",
+    "siam_crfe", "siam_pyramid",
+    "siam_cos_weight", "siam_cos_margin",
+    "siam_barlow_weight", "siam_barlow_lambda",
+    "siam_columns_18", "siam_columns_24", "siam_extra_columns",
 )
 
 _MODEL_LEARNED_ATTRS = (
@@ -491,7 +500,12 @@ def fit_models(s2_path, seed, which, n_seeds=1, cache_dir: Path | None = None,
     frame, s2_stat, s2_texture, s2_patch, s2_names, s2_built = attach_s2(
         frame, s2_path)
     target = target_for_legend(frame, LEGENDS["coarse3"], 20)
-    detail = [c for c in s2_stat if c not in set(s2_built)]
+    # `s2_stat` is the table's whole stat block, which now carries eleven 10 m
+    # channels. `s2_full` is the published seven-channel 204 that
+    # `mc_s2_drop0.7` and `s2off_deploy` were measured on and must keep meaning;
+    # named subsets pick their own channels out of `s2_stat`.
+    s2_full = s2_base_columns(s2_stat)
+    detail = [c for c in s2_full if c not in set(s2_built)]
 
     recipes = {
         "baseline_aef": dict(columns=aef_cols,
@@ -499,9 +513,9 @@ def fit_models(s2_path, seed, which, n_seeds=1, cache_dir: Path | None = None,
         "aef_builtfrac": dict(columns=aef_cols + s2_built,
                               kwargs=dict(arch="wide", loss="focal", epochs=30)),
         "mc_s2_drop0.7": dict(
-            columns=aef_cols + s2_stat,
+            columns=aef_cols + s2_full,
             kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
-                        aef_columns=aef_cols, tess_columns=s2_stat,
+                        aef_columns=aef_cols, tess_columns=s2_full,
                         mask_column=S2_MASK, aef_mask_column="aef_present",
                         fusion="gated_mean", modality_dropout=0.5,
                         dropout_tess=0.7),
@@ -520,9 +534,9 @@ def fit_models(s2_path, seed, which, n_seeds=1, cache_dir: Path | None = None,
         # tower. Sentinel-2 becomes a one-off training cost instead of a
         # per-tile one -- see S16 in S2_DETAIL_RESEARCH.md for the price paid.
         "s2off_deploy": dict(
-            columns=aef_cols + s2_stat,
+            columns=aef_cols + s2_full,
             kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
-                        aef_columns=aef_cols, tess_columns=s2_stat,
+                        aef_columns=aef_cols, tess_columns=s2_full,
                         mask_column=S2_MASK, aef_mask_column="aef_present",
                         fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
                         dropout_tess=0.7),
@@ -593,6 +607,281 @@ def fit_models(s2_path, seed, which, n_seeds=1, cache_dir: Path | None = None,
                         dropout_tess=0.7),
             deploy="aef_only")
 
+    # N8b (docs/research/SIAMESE_RESEARCH.md). `s2off_centre_m3s3_bf` with its
+    # AlphaEarth tower replaced by a SHARED ENDPOINT ENCODER -- one encoder
+    # applied to the 2018 and 2024 blocks, head on
+    # [z18, z24, z24-z18, |z24-z18|, cos] -- plus the gate-supervised cosine
+    # objective that pulls a stable plot's two embeddings together and pushes a
+    # change plot's apart.
+    #
+    # Everything about the deployment is unchanged: same 78-column privileged
+    # detail tower, same mask gating, same modality dropout, `deploy="aef_only"`,
+    # so Sentinel-2 is still never read at inference and this serves at exactly
+    # the deployed model's cost. The swap is entirely inside `aef_tower`, which
+    # is the one module `probs_aef_only_matrix` runs, so the fast path stays
+    # exact (`_assert_aef_only_ok` passes: two_tower / gated_mean / mask gate).
+    #
+    # On plots, 5 seeds, blocked CV: change-F1 0.6644 +/-0.0024 against 0.6568,
+    # macro-F1 0.7067 against 0.6943, and every commissioned transition up
+    # except Nature->Artificial, which plain `siam_cos` reads better. It is
+    # WORSE on stable built-up returned as vegetation (0.225 vs 0.196) and
+    # better on stable built-up returned as spurious change (0.129 vs 0.167).
+    #
+    # This is NOT a replacement for the deployed model. CLAUDE.md settles that
+    # choice on the user's visual read of the map, and no map evidence exists
+    # for this recipe yet -- that is what running it produces.
+    recipes["siam_s2off_cos"] = dict(
+        columns=aef_cols + s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+        kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
+                    aef_columns=aef_cols,
+                    tess_columns=s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+                    mask_column=S2_MASK, aef_mask_column="aef_present",
+                    fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
+                    dropout_tess=0.7, aef_siam=True, siam_dim=128,
+                    siam_combine="conc", siam_cos_weight=0.3,
+                    siam_cos_margin=0.3),
+        deploy="aef_only")
+
+    # Q7b (docs/research/SIAMESE_RESEARCH.md, section Q). `siam_s2off_cos` with
+    # the CRFE module from Zhang et al.'s burned-area Swin network on its head
+    # block: the elementwise SUM of the two endpoint embeddings appended
+    # alongside their difference, and a squeeze-and-excitation channel gate over
+    # the assembled block. Their spatial-attention branch has no form at a plot
+    # and is not here.
+    #
+    # Everything about the deployment is again unchanged -- both modules live
+    # INSIDE `aef_tower`, which is the one module `probs_aef_only_matrix` runs,
+    # so `deploy="aef_only"` stays exact and no Sentinel-2 is read at inference.
+    # Serving cost is one SE bottleneck (128+512 -> ~46 -> 641) per pixel over
+    # `siam_s2off_cos`.
+    #
+    # Why it is here: it is the only thing in four sections of ledger to move
+    # STABLE BUILT-UP, which CLAUDE.md records as the frontier the deployed
+    # model still owns. On plots at 15 seeds against `siam_s2off_cos`:
+    # `art_stable_recall` 0.669 vs 0.644, stable built-up read as vegetation
+    # 0.208 vs 0.230, spurious change on built-up 0.123 vs 0.126, for
+    # change-F1 -0.0010 / macro -0.0010 / focus -0.0019, all inside seed noise.
+    # Against the DEPLOYED model on the same 15 seeds: artStab +0.027,
+    # spurious change on built-up -0.041 (0.123 vs 0.164), `veg_stable_as_art`
+    # 0.0346 vs 0.0354 -- so it is not Artificial flooding -- and it keeps
+    # +0.004 change-F1 / +0.009 macro / +0.013 focus. It costs 0.014 on
+    # `Artificial -> Nature`, the recovery class.
+    #
+    # NOT a replacement for the deployed model; CLAUDE.md settles that on the
+    # user's visual read, and this recipe exists so there is a map to read.
+    recipes["siam_s2off_crfe_full"] = dict(
+        columns=aef_cols + s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+        kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
+                    aef_columns=aef_cols,
+                    tess_columns=s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+                    mask_column=S2_MASK, aef_mask_column="aef_present",
+                    fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
+                    dropout_tess=0.7, aef_siam=True, siam_dim=128,
+                    siam_combine="conc", siam_crfe="full",
+                    siam_cos_weight=0.3, siam_cos_margin=0.3),
+        deploy="aef_only")
+
+    # W1 / W1b (docs/research/SIAMESE_RESEARCH.md, section W). `siam_s2off_cos`
+    # with CLASS-BALANCED focal in place of plain focal -- Cui et al. (2019)
+    # effective-number weights (beta 0.999, normalised to mean 1) multiplying the
+    # same focal modulation. One kwarg. Nothing about the deployment changes:
+    # same 78-column privileged detail tower, same mask gating, same modality
+    # dropout, `deploy="aef_only"`, so Sentinel-2 is still never read at
+    # inference and both serve at exactly the deployed model's cost. The change
+    # is entirely in the training objective and leaves the served graph
+    # identical, so `probs_aef_only_matrix` stays exact.
+    #
+    # `cb_levels="fine"` (W1b) keeps the weights off the 2-class gate and
+    # merged2 and puts them only on the nine coarse3 classes. The pair separates
+    # the mechanism, and the separation is the reason both are here: on plots at
+    # 5 seeds the MERGED2/GATE weights are what move stable built-up (W1
+    # `art_stable_as_veg` 0.151, W1b 0.187, `siam_s2off_cos` 0.225) while the
+    # FINE weights are what break `Artificial -> Cropland` off zero.
+    #
+    # Why there is a map to read at all. W1's 0.151 is the largest move on
+    # stable-built-up-read-as-vegetation in the ledger -- past the DEPLOYED
+    # model's 0.196 and past the cost-gated deployed model's 0.165, a frontier
+    # CLAUDE.md records as still the deployed model's after four sections -- and
+    # it is the only instrument that moves it at all, because O3, V1 and every
+    # conformal read re-score the coarse3 arg-max and leave every merged2 metric
+    # bit-identical. It is NOT free: change-F1 0.6499 against 0.6644, macro-F1
+    # 0.6962 against 0.7067, change precision 0.559 against 0.651, and
+    # `veg_stable_as_art` 0.029 -> 0.041, which is the false-built-up direction
+    # the user's map judgement weights most.
+    #
+    # That last trade is exactly what no plot metric can adjudicate here -- Oslo
+    # has zero labelled plots inside the AOI (G3/G4) -- and it is why these two
+    # recipes exist. Read the change precision loss as pixels before believing
+    # the built-up gain. NOT a replacement for the deployed model; CLAUDE.md
+    # settles that on the user's visual read.
+    for _w_name, _w_extra in (("siam_s2off_cb", {}),
+                              ("siam_s2off_cb_fine", {"cb_levels": "fine"})):
+        recipes[_w_name] = dict(
+            columns=aef_cols + s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+            kwargs=dict(arch="two_tower", loss="cb_focal", epochs=30,
+                        tower_dim=256, aef_columns=aef_cols,
+                        tess_columns=s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+                        mask_column=S2_MASK, aef_mask_column="aef_present",
+                        fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
+                        dropout_tess=0.7, aef_siam=True, siam_dim=128,
+                        siam_combine="conc", siam_cos_weight=0.3,
+                        siam_cos_margin=0.3, **_w_extra),
+            deploy="aef_only")
+
+    # O3 (docs/research/SIAMESE_RESEARCH.md, section O). The AlphaEarth-ONLY
+    # shared-endpoint siamese with the cosine objective -- `siam_cos`, N2 -- read
+    # through the coarse3 decision-cost gate.
+    #
+    # No Sentinel-2 anywhere: not at training and not at inference. This model
+    # never had a detail tower, so unlike `s2off_*` there is no gate to force off
+    # and the AlphaEarth-only property is structural rather than a serving
+    # choice. It cannot use `probs_aef_only_matrix` (that fast path is proved for
+    # `two_tower` + `gated_mean` + mask gate, and asserts as much), so it runs the
+    # DataFrame path -- slower per pixel, and still no composite fetch, because
+    # `needs_s2` keys off whether any requested model reads a non-AlphaEarth
+    # column.
+    #
+    # `c3_costs` names the shipped decision-cost vector (fit_coarse3_costs.py).
+    # On the plots at 5 seeds this gate takes `focus_macro_f1` 0.3815 -> 0.4412
+    # under nested CV and `Artificial -> Cropland` 0.000 -> 0.2727, with every
+    # merged2 aggregate unchanged BY CONSTRUCTION -- it re-reads only the coarse3
+    # arg-max. The fitted vector is a single multiplier on that one class, so
+    # the `*_merged2.tif` map is bit-identical to the ungated model's and only
+    # `*_coarse3_gated.tif` differs.
+    recipes["siam_cos"] = dict(
+        columns=aef_cols,
+        kwargs=dict(
+            arch="siamese", loss="focal", epochs=30, tower_dim=256,
+            siam_columns_18=sorted(c for c in aef_cols if c.endswith("_2018")),
+            siam_columns_24=sorted(c for c in aef_cols if c.endswith("_2024")),
+            siam_extra_columns=sorted(c for c in aef_cols if c.endswith("_diff")),
+            siam_dim=128, siam_combine="conc",
+            siam_cos_weight=0.3, siam_cos_margin=0.3),
+        c3_costs="base_siam_cos_fine")
+
+    # P7e/P7f (docs/research/SIAMESE_RESEARCH.md, section P7). `siam_s2off_cos`
+    # whose shared endpoint encoder is PRETRAINED on single-date land-cover
+    # states -- 30 epochs of g(f(x)) -> {Nature, Cropland, Artificial} over the
+    # 13,118-unit GLanCE 2018 pool -- before the transition loss is ever seen.
+    # The state head is discarded after that phase and the auxiliary term is off
+    # for the whole fit, so this is a training-time-only change: the served graph
+    # is `siam_s2off_cos`'s exactly, `deploy="aef_only"` stays exact, and no
+    # Sentinel-2 and no GLanCE is read at inference.
+    #
+    # Why it is here. On plots at 5 seeds it takes `Artificial -> Cropland` from
+    # 0.000 to 0.1075 and `focus_macro_f1` 0.3847 -> 0.4157 at flat change-F1
+    # (0.6643 vs 0.6644), and it beats BOTH controls -- the endogenous one
+    # (no new data) and a shuffled-label one that lands exactly on baseline, so
+    # the effect is the labels' land-cover content and not the extra phase.
+    # Read with the gate (`c3_costs`) it is 0.4383 +/-0.008 against O3's 0.4318
+    # +/-0.023 on the same base: nominally the ledger's best, inside the noise.
+    #
+    # What the map has to answer, and the reason this recipe exists. On plots it
+    # moves stable built-up (`art_stable_recall` 0.646 -> 0.658, read-as-
+    # vegetation 0.225 -> 0.204) but pays `art_stable_as_change` 0.129 -> 0.138
+    # -- more fabricated habitat-loss events, the wrong direction for this
+    # product. Section W is the precedent: a plot-level built-up win there did
+    # not survive the map's 0.5% change base rate. The `Artificial -> Cropland`
+    # pixel count is the direct read on whether the rescued class is real.
+    #
+    # NOT a replacement for the deployed model. CLAUDE.md settles that on the
+    # user's visual read; this produces something to read.
+    recipes["siam_s2off_state_pre"] = dict(
+        columns=aef_cols + s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+        kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
+                    aef_columns=aef_cols,
+                    tess_columns=s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+                    mask_column=S2_MASK, aef_mask_column="aef_present",
+                    fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
+                    dropout_tess=0.7, aef_siam=True, siam_dim=128,
+                    siam_combine="conc", siam_cos_weight=0.3,
+                    siam_cos_margin=0.3,
+                    siam_state_pretrain=30, siam_state_source="external"),
+        deploy="aef_only", state_pool=True,
+        c3_costs="siam_s2off_state_pre")
+
+    # Y3 (docs/research/STATE_PRETRAIN_RESEARCH.md section Y). `siam_s2off_state_pre`
+    # with ONE change: the state-pretraining head's cross-entropy is weighted by
+    # 1/class frequency. Nothing else moves -- same 78 columns, same cosine
+    # objective, same 30 pretrain epochs, same `external` pool, same
+    # `deploy="aef_only"`, so it serves at the deployed model's cost and the A/B
+    # against `siam_s2off_state_pre` isolates the reweighting.
+    #
+    # It exists because of the user's read of the Oslo map: cropland has room to
+    # grow, but it must take pixels from Nature and NOT from the built-up
+    # classes. Section Y measured that as three numbers, and this is the only
+    # arm that moved all three the right way at both fold counts -- `f1_cropland`
+    # +0.0063/+0.0039, `nature_as_cropland` +0.0080/+0.0088 (where the growth
+    # should come from) and `artificial_as_cropland` -0.0038/-0.0037 (where it
+    # should not). Four capacity arms spending up to 3.8x the encoder parameters
+    # moved the *sum* of those errors and never the ratio (Y1/Y2).
+    #
+    # The state-level trade is -0.0014/-0.0048 macro-F1, and P7i already showed
+    # the pretraining phase itself is negative on plot change-F1 (0.6450 against
+    # 0.6644 unpretrained). So this map is NOT a candidate to replace the
+    # deployed model and must not be read against it -- the comparison that means
+    # anything is against `siam_s2off_state_pre`, its own baseline, which is why
+    # both are run together. CLAUDE.md settles the deployment on the user's
+    # visual read; this produces the pair to read.
+    recipes["siam_s2off_state_pre_cw"] = dict(
+        columns=aef_cols + s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+        kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
+                    aef_columns=aef_cols,
+                    tess_columns=s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+                    mask_column=S2_MASK, aef_mask_column="aef_present",
+                    fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
+                    dropout_tess=0.7, aef_siam=True, siam_dim=128,
+                    siam_combine="conc", siam_cos_weight=0.3,
+                    siam_cos_margin=0.3,
+                    siam_state_pretrain=30, siam_state_source="external",
+                    siam_state_class_weight="balanced"),
+        deploy="aef_only", state_pool=True,
+        c3_costs="siam_s2off_state_pre_cw")
+
+    # Q10f (docs/research/SIAMESE_RESEARCH.md, sections Q10-Q11). P7e above with
+    # SNIIF-Net's feature-interaction gate on the shared endpoint encoder:
+    # z18 <- z18 * (1 + tanh(W [z18 | z24])), one shared W used with the inputs
+    # swapped for the other date, zero-initialised. It sits UPSTREAM of the
+    # endpoint subtraction, so unlike section Q's CRFE gate it changes
+    # z24 - z18, the cosine feature and what the pair losses read. Serving cost
+    # is one 256x128 matmul per pixel per date; `deploy="aef_only"` is
+    # unaffected and no Sentinel-2 is read at inference.
+    #
+    # Why it is here, stated at the strength the plots actually support. On 15
+    # seeds it is the best arg-max `focus_macro_f1` in the section (0.4427 vs
+    # P7e's 0.4170) and takes `Artificial -> Cropland` 0.115 -> 0.225 with its
+    # seed spread nearly halved, at change-F1 -0.0010 and macro -0.0012, both
+    # inside noise. It also moves stable built-up the right way on all three
+    # rows at once -- `art_stable_recall` 0.657 -> 0.669, read-as-vegetation
+    # 0.206 -> 0.199, read-as-change 0.136 -> 0.132 -- which is what P7e could
+    # not do (P7e paid `art_stable_as_change` 0.129 -> 0.138) and is the single
+    # reason a map of this is worth fetching.
+    #
+    # Two things the plots also say, and they cut the other way. Read
+    # gate-to-gate against the incumbent P7f the whole gain is +0.0035, inside
+    # +/-0.005 (Q10h). And its own control -- the same gate reading each date
+    # twice instead of the pair -- reproduces 63% of it and BEATS it on
+    # built-up, so the cross-branch interaction is not the mechanism (Q10g).
+    #
+    # NOT a replacement for the deployed model, and not a candidate on plot
+    # metrics alone. `veg_stable_as_art` rises 0.0328 -> 0.0346 (still under the
+    # deployed 0.0354) and section W's lesson stands: a plot-level built-up gain
+    # measured at the plots' ~25% change base rate has twice failed to survive
+    # the map's 0.5%. This produces the raster that says which it is here.
+    recipes["siam_s2off_state_pre_fiim"] = dict(
+        columns=aef_cols + s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+        kwargs=dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
+                    aef_columns=aef_cols,
+                    tess_columns=s2_subset_columns(s2_stat, "centre_m3s3_bf"),
+                    mask_column=S2_MASK, aef_mask_column="aef_present",
+                    fusion="gated_mean", modality_dropout=MODALITY_DROPOUT,
+                    dropout_tess=0.7, aef_siam=True, siam_dim=128,
+                    siam_combine="conc", siam_cos_weight=0.3,
+                    siam_cos_margin=0.3, siam_fiim="cross",
+                    siam_state_pretrain=30, siam_state_source="external"),
+        deploy="aef_only", state_pool=True,
+        c3_costs="siam_s2off_state_pre_fiim")
+
     out = {}
     for name in which:
         spec = recipes[name]
@@ -620,7 +909,15 @@ def fit_models(s2_path, seed, which, n_seeds=1, cache_dir: Path | None = None,
                   f"({len(spec['columns'])} cols) ...", flush=True)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                model.fit(frame, target.to_numpy())
+                # A state-pretrained recipe gets the WHOLE pool here, where the
+                # lab cuts it to each fold's training blocks: there is no
+                # held-out block at deployment, so the split that protects the
+                # blocked-CV estimate has nothing to protect and would only
+                # discard labels. No labelled plot is at risk either way -- zero
+                # pool points fall within 100 m of one (N14a).
+                model.fit(frame, target.to_numpy(),
+                          state_frame=_state_pool() if spec.get("state_pool")
+                          else None)
             models.append(model)
         entry = {"models": models, "spec": spec}
         if cache_file is not None and metadata is not None:
@@ -629,6 +926,31 @@ def fit_models(s2_path, seed, which, n_seeds=1, cache_dir: Path | None = None,
                   f"to {cache_file}", flush=True)
         out[name] = entry
     return out, aef_cols, s2_stat, s2_built, detail
+
+
+def _coarse3_costs(spec: dict, fine_classes: list):
+    """The shipped coarse3 decision-cost vector for a recipe, or None.
+
+    Aligned to *this* model's coarse3 class order by NAME. The stored vector
+    carries its own class list precisely so the two can be checked rather than
+    assumed: a silently mis-aligned cost vector would multiply the wrong class
+    and produce a map that looks entirely plausible, which is the same failure
+    mode the ensemble class-order check exists to prevent.
+    """
+    name = spec.get("c3_costs")
+    if not name:
+        return None
+    path = project_data_dir("analysis_results") / f"coarse3_costs__{name}.json"
+    if not path.exists():
+        raise SystemExit(
+            f"recipe wants coarse3 costs from {path.name}, which does not exist; "
+            f"run: python src/fit_coarse3_costs.py --idea {name}")
+    blob = json.loads(path.read_text())
+    lookup = dict(zip(blob["fine_classes"], blob["costs"]))
+    missing = [c for c in fine_classes if c not in lookup]
+    if missing:
+        raise SystemExit(f"{path.name} has no cost for coarse3 classes {missing}")
+    return np.array([lookup[c] for c in fine_classes], dtype="float64")
 
 
 def predict(entry, aef_bands, s2_mat, s2_present, batch, seed, want_off=False,
@@ -1006,6 +1328,26 @@ async def run_aoi(name, bbox, index, reader, models, aef_cols, s2_stat, s2_built
                 fine_codes.reshape(height, width), geobox, list(fine_classes),
                 CLASS_COLORS)
 
+            # O3: the coarse3 decision-cost gate, written as a SECOND raster
+            # beside the plain arg-max rather than replacing it. Both come from
+            # the same forward pass, so the pair is an exact counterfactual for
+            # what the gate does on this AOI -- which is the only way to see it,
+            # since Oslo has no labelled plots to score either read against
+            # (G3/G4). The merged2 raster is untouched: the gate acts on the
+            # coarse3 arg-max alone.
+            costs = _coarse3_costs(entry["spec"], list(fine_classes))
+            if costs is not None:
+                gated_idx = (fine_probs * costs).argmax(1)
+                write_class_raster(
+                    out_dir / f"{name}_{model_name}{suffix}_coarse3_gated.tif",
+                    np.where(aef_valid, gated_idx, NODATA)
+                    .astype("uint8").reshape(height, width),
+                    geobox, list(fine_classes), CLASS_COLORS)
+                moved = int((gated_idx != fine_idx)[aef_valid].sum())
+                print(f"[{name}] {model_name:16s}{suffix or '      '} coarse3 gate "
+                      f"moved {moved:,} px ({moved / max(int(aef_valid.sum()), 1):.3%})",
+                      flush=True)
+
             # Consistency of the two reads. p_merged = p_fine @ M, but arg-max
             # does not commute with that sum: three fine classes at 0.30/0.30/0.35
             # elect the singleton at the fine head and the pair after aggregation.
@@ -1155,7 +1497,7 @@ def main() -> None:
                         default=["baseline_aef", "aef_builtfrac", "mc_s2_drop0.7"])
     parser.add_argument("--s2", type=Path,
                         default=project_data_dir("embeddings",
-                                                 "s2_features_habloss_recover.parquet"))
+                                                 "s2_features_habloss_recover_10m.parquet"))
     parser.add_argument("--shard-dir", type=Path,
                         default=project_data_dir("embeddings", "s2_shards"))
     parser.add_argument("--resolution", type=float, default=10.0)

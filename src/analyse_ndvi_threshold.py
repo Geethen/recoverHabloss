@@ -67,12 +67,27 @@ def threshold_scan(veg: np.ndarray, art: np.ndarray, grid: np.ndarray):
 
 
 def auc(veg: np.ndarray, art: np.ndarray) -> float:
-    """P(a random built plot has lower NDVI than a random vegetated one)."""
+    """P(a random built plot has lower NDVI than a random vegetated one).
+
+    Ties take **mid-ranks** (`rankdata`), which is the definition -- a tie is
+    half a win, not a win. The first version of this ranked with
+    `ranks[argsort(values)] = arange(1, n+1)`, giving equal values *distinct*
+    ranks in array order; since `values` puts the Artificial class first, every
+    tie resolved in its favour and the score came out too high.
+
+    That is not a rounding-level detail on this data. Built fraction over a
+    3x3 window takes only ten distinct values, so it is almost all ties, and
+    the bug inflated it from a true 0.686 to 0.762 -- which is how the radius
+    sweep came to show a decisive 3 px optimum that is really a dead heat with
+    5 px (0.685). Columns with few ties were unaffected to within 0.001, which
+    is why the error survived: only the winner was wrong. See section U4 of
+    `docs/research/S2_DETAIL_RESEARCH.md`.
+    """
+    from scipy.stats import rankdata
+
     values = np.concatenate([art, veg])
     labels = np.concatenate([np.ones(len(art)), np.zeros(len(veg))])
-    order = np.argsort(values)
-    ranks = np.empty(len(values), float)
-    ranks[order] = np.arange(1, len(values) + 1)
+    ranks = rankdata(values)
     n1, n0 = labels.sum(), (1 - labels).sum()
     # Built should sit LOW, so invert the usual direction.
     return 1.0 - (ranks[labels == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0)

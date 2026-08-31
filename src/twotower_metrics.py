@@ -86,6 +86,17 @@ def per_class(truth: np.ndarray, pred: np.ndarray, classes: list) -> dict:
         out["art_stable_recall"] = float((pred[art] == ART_STABLE).mean())
         # The user-reported failure: built-up that comes back as stable nature.
         out["art_stable_as_veg"] = float((pred[art] == VEG_STABLE).mean())
+        # The OTHER half of the same error, and the half that matters more for a
+        # change map: stable built-up returned as a TRANSITION. A stable
+        # built-up plot called stable Vegetation is a misclassification; called
+        # "Vegetation -> Artificial" it is a fabricated habitat-loss event, which
+        # is what the map is commissioned to count. Tracking only
+        # ``art_stable_as_veg`` made these two trade freely and invisibly --
+        # section N found a model with a WORSE as_veg and a much better
+        # as_change, and the single number read it as a pure regression.
+        out["art_stable_as_change"] = float(
+            np.isin(pred[art], [c for c in classes
+                                if c not in (ART_STABLE, VEG_STABLE)]).mean())
         # ... and the reverse leak, so a "fix" that just floods Artificial shows.
         veg = truth == VEG_STABLE
         out["veg_stable_as_art"] = float((pred[veg] == ART_STABLE).mean()) if veg.any() else np.nan

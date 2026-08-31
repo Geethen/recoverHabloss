@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaEarth embedding space — UMAP</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --plane: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --dim: #b9b7b0;
+    --wash: rgba(11, 11, 11, 0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --plane: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --dim: #55544f;
+      --wash: rgba(255, 255, 255, 0.07);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --plane: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --dim: #55544f;
+    --wash: rgba(255, 255, 255, 0.07);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px 20px 48px; }
+
+  header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin: 0; max-width: 74ch; }
+  .ghost {
+    margin-left: auto; flex: none; background: none; color: var(--text-secondary);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+    font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .ghost:hover { background: var(--wash); color: var(--text-primary); }
+
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-end;
+    padding: 12px 14px; margin-bottom: 12px;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .ctl { display: flex; flex-direction: column; gap: 4px; }
+  .ctl label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  select, input[type="search"] {
+    font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 6px;
+    border: 1px solid var(--axis); background: var(--surface-1); color: var(--text-primary);
+  }
+  input[type="search"] { min-width: 210px; }
+  .ctl.grow { flex: 1 1 200px; }
+  .count { margin-left: auto; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .main { grid-template-columns: minmax(0, 1fr); } }
+
+  .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; }
+  .plot { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 620px; cursor: crosshair; touch-action: none; }
+  @media (max-width: 900px) { canvas { height: 460px; } }
+  .hint { margin-left: auto; align-self: center; font-size: 11px; color: var(--muted); }
+  @media (max-width: 640px) { .hint { display: none; } }
+  .zoombtns { position: absolute; right: 10px; top: 10px; display: flex; gap: 6px; }
+  .zoombtns button {
+    width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-secondary); font: inherit; cursor: pointer;
+  }
+  .zoombtns button:hover { background: var(--wash); color: var(--text-primary); }
+  .zoombtns button.wide { width: auto; padding: 0 9px; font-size: 12px; }
+
+  #tip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .08s;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 9px; font-size: 12px; line-height: 1.45; max-width: 260px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.16); z-index: 5;
+  }
+  #tip b { font-weight: 600; }
+  #tip .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-secondary); word-break: break-all; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 6px; padding: 10px 12px; border-top: 1px solid var(--border); }
+  .legend button {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 6px;
+    border: 1px solid transparent; border-radius: 999px; background: none;
+    color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .legend button:hover { background: var(--wash); }
+  .legend button[aria-pressed="false"] { opacity: .42; text-decoration: line-through; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .legend .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .panel { padding: 14px 16px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .empty { color: var(--muted); font-size: 13px; }
+  dl { margin: 0 0 14px; display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font-size: 13px; }
+  dt { color: var(--muted); font-size: 12px; }
+  dd { margin: 0; word-break: break-word; }
+  dd .n { color: var(--muted); }
+  dd .mono, dd.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; word-break: break-all; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; }
+  .links { display: flex; flex-direction: column; gap: 6px; }
+  .links a, .links button {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface-1); color: var(--text-primary);
+    font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; text-align: left;
+  }
+  .links a:hover, .links button:hover { background: var(--wash); }
+  .links .arrow { color: var(--muted); font-size: 12px; flex: none; padding: 2px 3px; border-radius: 4px; }
+  .links a .arrow:hover { background: var(--wash); color: var(--text-primary); }
+  .note { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 10px 0 0; }
+  .links small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+
+  details.table { margin-top: 16px; }
+  details.table summary { cursor: pointer; color: var(--text-secondary); font-size: 13px; padding: 6px 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 13px; margin-top: 8px; min-width: 380px; }
+  th, td { text-align: left; padding: 6px 14px 6px 0; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  caption { text-align: left; color: var(--text-secondary); font-size: 12px; padding-bottom: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>AlphaEarth embedding space — UMAP</h1>
+    <p class="sub" id="viewdesc"></p>
+  </div>
+  <button class="ghost" id="theme" type="button">Dark</button>
+</header>
+
+<div class="controls">
+  <div class="ctl">
+    <label for="view">Projection</label>
+    <select id="view"></select>
+  </div>
+  <div class="ctl">
+    <label for="colour">Colour by</label>
+    <select id="colour">
+      <option value="state_2018">State 2018</option>
+      <option value="state_2024">State 2024</option>
+      <option value="changed" selected>Change</option>
+      <option value="source">Source</option>
+      <option value="source_state">Source × state 2018</option>
+    </select>
+  </div>
+  <div class="ctl">
+    <label for="highlight">Highlight transition</label>
+    <select id="highlight"><option value="">none</option></select>
+  </div>
+  <div class="ctl grow">
+    <label for="search">Find plot (PLOTID or "lat, lon")</label>
+    <input type="search" id="search" placeholder="a-81-639… or 26.65, -81.64" autocomplete="off">
+  </div>
+  <div class="count" id="count"></div>
+</div>
+
+<div class="main">
+  <div class="card plot">
+    <canvas id="cv"></canvas>
+    <div class="zoombtns">
+      <button type="button" id="zin" title="Zoom in">+</button>
+      <button type="button" id="zout" title="Zoom out">−</button>
+      <button type="button" id="reset" class="wide" title="Reset view">Reset</button>
+    </div>
+    <div id="tip"></div>
+    <div class="legend" id="legend">
+      <span class="hint">scroll to zoom · drag to pan · click a point for map links</span>
+    </div>
+  </div>
+
+  <div class="card panel">
+    <h2>Selected plot</h2>
+    <div id="detail"><p class="empty">Click any point to see its labels and open it in Google Earth.</p></div>
+  </div>
+</div>
+
+<details class="table">
+  <summary>Table view — class counts for the current colouring</summary>
+  <div class="scroll"><table id="counts"></table></div>
+</details>
+
+</div>
+
+<script>
+const DATA = __UMAP_DATA__;
+
+/* ---------- palette: three validated categorical slots (all-pairs safe) ---- */
+function theme() {
+  const c = getComputedStyle(document.documentElement);
+  return {
+    series: [c.getPropertyValue('--series-1').trim(),
+             c.getPropertyValue('--series-2').trim(),
+             c.getPropertyValue('--series-3').trim()],
+    dim: c.getPropertyValue('--dim').trim(),
+    surface: c.getPropertyValue('--surface-1').trim(),
+    grid: c.getPropertyValue('--grid').trim(),
+    axis: c.getPropertyValue('--axis').trim(),
+    muted: c.getPropertyValue('--muted').trim(),
+    text: c.getPropertyValue('--text-primary').trim()
+  };
+}
+/* "Change" reads better with the stable class recessive but still a real hue. */
+function colourFor(field, code, T) {
+  return T.series[code % T.series.length];
+}
+
+/* ---------- state ---------------------------------------------------------- */
+const state = {
+  view: DATA.view_order[0],
+  field: 'changed',
+  highlight: '',
+  hidden: new Set(),
+  sel: -1,
+  hover: -1,
+  k: 1, tx: 0, ty: 0            // zoom / pan in normalised units
+};
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const tip = document.getElementById('tip');
+let W = 0, H = 0, DPR = 1;
+
+/* ---------- controls ------------------------------------------------------- */
+const viewSel = document.getElementById('view');
+for (const v of DATA.view_order) {
+  const o = document.createElement('option');
+  o.value = v; o.textContent = v;
+  viewSel.append(o);
+}
+viewSel.value = state.view;
+
+const hiSel = document.getElementById('highlight');
+{
+  const f = DATA.fields.transition;
+  const counts = new Map();
+  for (const c of f.codes) counts.set(c, (counts.get(c) || 0) + 1);
+  f.levels.forEach((lab, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = `${lab}  (${(counts.get(i) || 0).toLocaleString()})`;
+    hiSel.append(o);
+  });
+}
+
+/* Colourings that only exist when the external pools were projected. */
+for (const opt of [...document.getElementById('colour').options]) {
+  if (!DATA.fields[opt.value]) opt.remove();
+}
+
+viewSel.onchange = () => {
+  state.view = viewSel.value;
+  // The legend counts what the view shows, so it is rebuilt with the view.
+  resetView(); describe(); buildLegend(); buildCounts(); draw();
+};
+document.getElementById('colour').onchange = e => {
+  state.field = e.target.value; state.hidden.clear(); buildLegend(); buildCounts(); draw();
+};
+hiSel.onchange = e => { state.highlight = e.target.value; draw(); };
+
+document.getElementById('theme').onclick = () => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
+    || (!document.documentElement.hasAttribute('data-theme')
+        && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+  document.getElementById('theme').textContent = dark ? 'Dark' : 'Light';
+  buildLegend(); renderDetail(); draw();
+};
+
+document.getElementById('zin').onclick = () => { zoomAt(W / 2, H / 2, 1.4); };
+document.getElementById('zout').onclick = () => { zoomAt(W / 2, H / 2, 1 / 1.4); };
+document.getElementById('reset').onclick = () => { resetView(); draw(); };
+
+/* ---------- search --------------------------------------------------------- */
+document.getElementById('search').oninput = e => {
+  const q = e.target.value.trim();
+  if (!q) { state.sel = -1; renderDetail(); draw(); return; }
+  let hit = -1;
+  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (m) {
+    const [la, lo] = [parseFloat(m[1]), parseFloat(m[2])];
+    let best = Infinity;
+    for (let i = 0; i < DATA.n; i++) {
+      const d = (DATA.lat[i] - la) ** 2 + (DATA.lon[i] - lo) ** 2;
+      if (d < best) { best = d; hit = i; }
+    }
+  } else {
+    const lower = q.toLowerCase();
+    hit = DATA.plotid.findIndex(p => p.toLowerCase().includes(lower));
+  }
+  if (hit >= 0) { state.sel = hit; centreOn(hit); renderDetail(); draw(); }
+};
+
+/* ---------- geometry ------------------------------------------------------- */
+const PAD = 26;
+function sx(x) { return PAD + ((x * state.k + state.tx) + 1) / 2 * (W - 2 * PAD); }
+function sy(y) { return H - PAD - ((y * state.k + state.ty) + 1) / 2 * (H - 2 * PAD); }
+
+function resetView() { state.k = 1; state.tx = 0; state.ty = 0; }
+
+function zoomAt(px, py, f) {
+  // keep the data point under the cursor fixed
+  const ux = ((px - PAD) / (W - 2 * PAD) * 2 - 1 - state.tx) / state.k;
+  const uy = (((H - PAD - py) / (H - 2 * PAD)) * 2 - 1 - state.ty) / state.k;
+  state.k = Math.max(0.6, Math.min(80, state.k * f));
+  state.tx = ((px - PAD) / (W - 2 * PAD) * 2 - 1) - ux * state.k;
+  state.ty = (((H - PAD - py) / (H - 2 * PAD)) * 2 - 1) - uy * state.k;
+  draw();
+}
+
+function centreOn(i) {
+  const v = DATA.views[state.view];
+  state.k = Math.max(state.k, 8);
+  state.tx = -v.x[i] * state.k;
+  state.ty = -v.y[i] * state.k;
+}
+
+/* ---------- drawing -------------------------------------------------------- */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const r = cv.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  draw();
+}
+
+/* A row absent from the current view has null coordinates -- the external state
+   pools carry only a 2018 embedding, so they exist in that view and nowhere
+   else. Hiding them here rather than dropping them from the payload keeps a row
+   index meaning the same point in every view. */
+function visibleMask() {
+  const f = DATA.fields[state.field];
+  const v = DATA.views[state.view];
+  return f.codes.map((c, i) => !state.hidden.has(c) && v.x[i] !== null);
+}
+
+function draw() {
+  const T = theme();
+  const v = DATA.views[state.view];
+  const f = DATA.fields[state.field];
+  const tr = DATA.fields.transition;
+  const hi = state.highlight === '' ? -1 : parseInt(state.highlight, 10);
+  const vis = visibleMask();
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = T.surface;
+  ctx.fillRect(0, 0, W, H);
+
+  // recessive frame: UMAP axes carry no units, so no ticks — just a plot edge
+  ctx.strokeStyle = T.grid; ctx.lineWidth = 1;
+  ctx.strokeRect(PAD - 0.5, PAD - 0.5, W - 2 * PAD + 1, H - 2 * PAD + 1);
+
+  const r = Math.max(1.6, Math.min(4.5, 2.4 * Math.sqrt(state.k)));
+  let shown = 0;
+
+  // pass 1 — everything not highlighted (dimmed when a transition is focused)
+  ctx.globalAlpha = hi >= 0 ? 0.5 : 0.78;
+  for (let i = 0; i < DATA.n; i++) {
+    if (!vis[i]) continue;
+    shown++;
+    if (hi >= 0 && tr.codes[i] === hi) continue;
+    const X = sx(v.x[i]), Y = sy(v.y[i]);
+    if (X < -8 || X > W + 8 || Y < -8 || Y > H + 8) continue;
+    ctx.fillStyle = hi >= 0 ? T.dim : colourFor(state.field, f.codes[i], T);
+    ctx.beginPath(); ctx.arc(X, Y, r, 0, 6.2832); ctx.fill();
+  }
+
+  // pass 2 — the focused transition, on top, larger, with a surface ring
+  if (hi >= 0) {
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < DATA.n; i++) {
+      if (!vis[i] || tr.codes[i] !== hi) continue;
+      const X = sx(v.x[i]), Y = sy(v.y[i]);
+      if (X < -8 || X > W + 8 || Y < -8 || Y > H + 8) continue;
+      ctx.beginPath(); ctx.arc(X, Y, r + 2.2, 0, 6.2832);
+      ctx.fillStyle = T.surface; ctx.fill();
+      ctx.beginPath(); ctx.arc(X, Y, r + 0.8, 0, 6.2832);
+      ctx.fillStyle = colourFor(state.field, f.codes[i], T); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  for (const [i, ring] of [[state.hover, false], [state.sel, true]]) {
+    if (i < 0 || !vis[i]) continue;
+    const X = sx(v.x[i]), Y = sy(v.y[i]);
+    ctx.beginPath(); ctx.arc(X, Y, r + 3.5, 0, 6.2832);
+    ctx.fillStyle = T.surface; ctx.fill();                    // 2px surface gap
+    ctx.beginPath(); ctx.arc(X, Y, r + 1.5, 0, 6.2832);
+    ctx.fillStyle = colourFor(state.field, f.codes[i], T); ctx.fill();
+    if (ring) {
+      ctx.beginPath(); ctx.arc(X, Y, r + 6, 0, 6.2832);
+      ctx.strokeStyle = T.text; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+  }
+
+  const total = inView();
+  document.getElementById('count').textContent =
+    `${shown.toLocaleString()} of ${total.toLocaleString()} shown` +
+    (total < DATA.n ? ` · ${(DATA.n - total).toLocaleString()} single-date rows `
+                    + `not in the ${state.view} view` : '') +
+    (state.k > 1.05 ? ` · ${state.k.toFixed(1)}× zoom` : '');
+}
+
+/* ---------- picking -------------------------------------------------------- */
+function pick(px, py) {
+  const v = DATA.views[state.view], vis = visibleMask();
+  let best = 12 * 12, hit = -1;
+  for (let i = 0; i < DATA.n; i++) {
+    if (!vis[i]) continue;
+    const dx = sx(v.x[i]) - px, dy = sy(v.y[i]) - py;
+    const d = dx * dx + dy * dy;
+    if (d < best) { best = d; hit = i; }
+  }
+  return hit;
+}
+
+let drag = null;
+cv.addEventListener('pointerdown', e => {
+  drag = { x: e.offsetX, y: e.offsetY, tx: state.tx, ty: state.ty, moved: false };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e => {
+  if (drag) {
+    const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    state.tx = drag.tx + dx / (W - 2 * PAD) * 2;
+    state.ty = drag.ty - dy / (H - 2 * PAD) * 2;
+    tip.style.opacity = 0;
+    draw();
+    return;
+  }
+  const i = pick(e.offsetX, e.offsetY);
+  if (i !== state.hover) { state.hover = i; draw(); }
+  if (i < 0) { tip.style.opacity = 0; cv.style.cursor = 'crosshair'; return; }
+  cv.style.cursor = 'pointer';
+  const tr = DATA.fields.transition;
+  tip.innerHTML =
+    `<b>${tr.levels[tr.codes[i]]}</b><br>` +
+    `${DATA.lat[i].toFixed(4)}, ${DATA.lon[i].toFixed(4)} · ${DATA.fields.source.levels[DATA.fields.source.codes[i]]}<br>` +
+    `<span class="mono">${DATA.plotid[i]}</span>`;
+  tip.style.opacity = 1;
+  const r = cv.getBoundingClientRect(), t = tip.getBoundingClientRect();
+  let left = e.offsetX + 14, top = e.offsetY + 14;
+  if (left + t.width > r.width - 4) left = e.offsetX - t.width - 14;
+  if (top + t.height > r.height - 4) top = e.offsetY - t.height - 14;
+  tip.style.left = left + 'px'; tip.style.top = top + 'px';
+});
+cv.addEventListener('pointerup', e => {
+  const wasDrag = drag && drag.moved;
+  drag = null;
+  if (wasDrag) return;
+  const i = pick(e.offsetX, e.offsetY);
+  state.sel = i;
+  renderDetail(); draw();
+});
+cv.addEventListener('pointerleave', () => {
+  tip.style.opacity = 0;
+  if (state.hover !== -1) { state.hover = -1; draw(); }
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomAt(e.offsetX, e.offsetY, e.deltaY < 0 ? 1.18 : 1 / 1.18);
+}, { passive: false });
+
+/* ---------- legend --------------------------------------------------------- */
+/* Counted over the rows present in the *current view*, not over the payload.
+   With the external pools loaded the payload holds ~32k rows but only the 2018
+   view draws them all, and a legend that counted rows it is not showing would
+   put 12,360 LUCAS points in the tally of a 2024 projection they are absent
+   from. */
+function counts(field) {
+  const f = DATA.fields[field], v = DATA.views[state.view];
+  const out = new Array(f.levels.length).fill(0);
+  for (let i = 0; i < f.codes.length; i++) if (v.x[i] !== null) out[f.codes[i]]++;
+  return out;
+}
+
+function inView() {
+  const v = DATA.views[state.view];
+  let n = 0;
+  for (let i = 0; i < DATA.n; i++) if (v.x[i] !== null) n++;
+  return n;
+}
+
+function buildLegend() {
+  const T = theme(), f = DATA.fields[state.field], n = counts(state.field);
+  const el = document.getElementById('legend');
+  el.innerHTML = '';
+  f.levels.forEach((lab, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('aria-pressed', String(!state.hidden.has(i)));
+    b.innerHTML = `<span class="swatch" style="background:${colourFor(state.field, i, T)}"></span>` +
+                  `${lab} <span class="n">${n[i].toLocaleString()}</span>`;
+    b.onclick = () => {
+      state.hidden.has(i) ? state.hidden.delete(i) : state.hidden.add(i);
+      buildLegend(); draw();
+    };
+    el.append(b);
+  });
+  const hint = document.createElement('span');
+  hint.className = 'hint';
+  hint.textContent = 'scroll to zoom · drag to pan · click a point for map links';
+  el.append(hint);
+}
+
+function buildCounts() {
+  const f = DATA.fields[state.field], n = counts(state.field), total = inView();
+  const label = document.getElementById('colour').selectedOptions[0].textContent;
+  const rows = f.levels.map((lab, i) =>
+    `<tr><td>${lab}</td><td class="num">${n[i].toLocaleString()}</td>` +
+    `<td class="num">${(100 * n[i] / total).toFixed(1)}%</td></tr>`).join('');
+  document.getElementById('counts').innerHTML =
+    `<caption>${label} — ${total.toLocaleString()} rows in the ${state.view} view</caption>` +
+    `<thead><tr><th>Class</th><th class="num">Plots</th><th class="num">Share</th></tr></thead>` +
+    `<tbody>${rows}</tbody>`;
+}
+
+/* ---------- detail panel + map links --------------------------------------- */
+function links(lat, lon) {
+  const ll = `${lat.toFixed(6)},${lon.toFixed(6)}`;
+  const l5 = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  return [
+    // /web/search/ drops a marker on the coordinate; the bare /web/@... form
+    // flies there with no pin, which is harder to adjudicate against.
+    ['Google Earth', 'marker on the plot; use the history slider for 2018 vs 2024',
+     `https://earth.google.com/web/search/${ll}`],
+    // `basemap=satellite` is only honoured by map_action=map, which has no pin.
+    // The /place/ form is the one that gives satellite *and* a pin: !3m1!1e3.
+    ['Google Maps — satellite', 'dropped pin at the exact coordinate',
+     `https://www.google.com/maps/place/${ll}/@${ll},18z/data=!3m1!1e3`],
+    // The trailing slash matters: /timelapse 301s to /timelapse/ and the
+    // redirect discards the #v= hash, landing you on the global default view.
+    ['Earth Engine Timelapse', 'annual Landsat animation over this location',
+     `https://earthengine.google.com/timelapse/#v=${l5},13,latLng&t=0.1`],
+    ['Copernicus Browser', 'Sentinel-2 scenes, pick the 2018 and 2024 dates',
+     `https://browser.dataspace.copernicus.eu/?zoom=14&lat=${lat.toFixed(5)}&lng=${lon.toFixed(5)}`]
+  ];
+}
+
+/** Escape a URL for an href attribute -- `&` in a query string is not an entity. */
+function attr(url) {
+  return url.replace(/&/g, '&amp;').replace(/"/g, '%22');
+}
+
+/** Copy with a fallback: navigator.clipboard is denied on some file:// origins. */
+function copyText(text) {
+  const legacy = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.append(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true, legacy);
+  }
+  return Promise.resolve(legacy());
+}
+
+function renderDetail() {
+  const el = document.getElementById('detail');
+  const i = state.sel;
+  if (i < 0) {
+    el.innerHTML = '<p class="empty">Click any point to see its labels and open it in Google Earth.</p>';
+    return;
+  }
+  const T = theme();
+  const F = DATA.fields;
+  const lat = DATA.lat[i], lon = DATA.lon[i];
+  const swatch = `<span class="swatch" style="background:${colourFor(state.field, F[state.field].codes[i], T)}"></span>`;
+  const rows = [
+    ['Transition', `<span class="chip">${swatch}${F.transition.levels[F.transition.codes[i]]}</span>`],
+    ['2018 label', `${F.lc_2018.levels[F.lc_2018.codes[i]]} <span class="n">→ ${F.state_2018.levels[F.state_2018.codes[i]]}</span>`],
+    ['2024 label', `${F.lc_2024.levels[F.lc_2024.codes[i]]} <span class="n">→ ${F.state_2024.levels[F.state_2024.codes[i]]}</span>`],
+    ['Source', F.source.levels[F.source.codes[i]]],
+    ['Lat, lon', `<span class="mono">${lat.toFixed(6)}, ${lon.toFixed(6)}</span>`],
+    ['PLOTID', `<span class="mono">${DATA.plotid[i]}</span>`]
+  ];
+  el.innerHTML =
+    '<dl>' + rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('') + '</dl>' +
+    '<h2>Open this plot</h2><div class="links">' +
+    links(lat, lon).map(([name, note, href]) =>
+      `<a href="${attr(href)}" target="_blank" rel="noopener" title="${attr(href)}">` +
+      `<span>${name}<small>${note}</small></span>` +
+      `<span class="arrow" role="button" tabindex="0" data-url="${attr(href)}" ` +
+      `title="Copy this link">⧉</span></a>`
+    ).join('') +
+    `<button type="button" id="copy"><span>Copy coordinates<small>${lat.toFixed(6)}, ${lon.toFixed(6)}</small></span><span class="arrow">⧉</span></button>` +
+    '</div>' +
+    '<p class="note">Links open in a new tab. If nothing happens, the page is in ' +
+    'an editor preview — those block new tabs. Open the file in a browser, or ' +
+    'use the ⧉ to copy a link.</p>';
+  document.getElementById('copy').onclick = ev => {
+    const small = ev.currentTarget.querySelector('small');
+    copyText(`${lat.toFixed(6)}, ${lon.toFixed(6)}`)
+      .then(ok => { small.textContent = ok ? 'copied' : 'copy blocked — select it above'; });
+  };
+  // The ⧉ inside an anchor copies instead of navigating -- the escape hatch when
+  // the page is sandboxed and target="_blank" is a no-op.
+  for (const a of el.querySelectorAll('.links a .arrow[data-url]')) {
+    a.onclick = ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      const t = ev.currentTarget;
+      copyText(t.dataset.url).then(ok => {
+        t.textContent = ok ? '✓' : '✕';
+        setTimeout(() => { t.textContent = '⧉'; }, 1200);
+      });
+    };
+  }
+}
+
+/* ---------- boot ----------------------------------------------------------- */
+function describe() {
+  document.getElementById('viewdesc').textContent =
+    `${DATA.n.toLocaleString()} labelled plots, projected from ${DATA.views[state.view].desc}. ` +
+    'UMAP never sees the labels — colour is attached afterwards.';
+}
+
+document.getElementById('colour').value = state.field;
+describe(); buildLegend(); buildCounts(); renderDetail();
+new ResizeObserver(resize).observe(cv);
+resize();
+</script>
+</body>
+</html>

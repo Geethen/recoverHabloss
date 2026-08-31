@@ -86,7 +86,8 @@ import pandas as pd
 from model_zoo import HierarchicalSoftmaxNN
 from project_paths import project_data_dir
 from twotower_lab import (AEF_MASK, BASE, S2_MASK, S2_SUBSETS, load_context,
-                          s2_families, s2_subset_columns, score_probs)
+                          s2_base_columns, s2_families, s2_subset_columns,
+                          score_probs)
 
 DEPLOYED = dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
                 fusion="gated_mean", modality_dropout=0.5, dropout_tess=0.7,
@@ -96,7 +97,12 @@ DEPLOYED = dict(arch="two_tower", loss="focal", epochs=30, tower_dim=256,
 # ---------------------------------------------------------------------------
 def rungs(ctx) -> list[dict]:
     aef = list(ctx.aef_cols)
-    s2 = list(ctx.s2_stat_cols)
+    # The seven-channel block: every row already in `s2off_cost_ladder.csv` was
+    # measured on it, and a rung that silently grew to eleven channels would be
+    # compared against those rows as though nothing had changed. The eleven-
+    # channel arms are the `X_*` rungs below and say so in their names.
+    s2 = s2_base_columns(ctx.s2_stat_cols)
+    s2_all = list(ctx.s2_stat_cols)
     fams = s2_families(s2)
     # The ladder's own coarse groupings, alongside the named subsets that
     # `S2_SUBSETS` defines for reporting. Both are read from the same family
@@ -136,6 +142,21 @@ def rungs(ctx) -> list[dict]:
              **tt(aef, [c for c in s2
                         if not c.startswith(("S2m25_", "S2s25_", "S2bf25"))])),
 
+        # -- S19, the year axis. `S_2024` and `S_nodiff` already sit here; the
+        # third corner was never cut, and it is the one the difference argument
+        # is about. `S_diff` keeps every family and channel and throws away both
+        # endpoint *states*, so the detail tower sees only what moved.
+        dict(key="S_diff", note="the difference block only, no endpoints (68)",
+             **tt(aef, [c for c in s2 if c.endswith("_diff")])),
+
+        # -- S19, the channel axis. Eleven 10 m channels: the deployed seven
+        # plus EVI2, GRVI, BSI and CI. Named `X_` so no row here is ever read
+        # against a seven-channel row above without the name saying so.
+        dict(key="X_full", note="all families, eleven 10 m channels (312)",
+             **tt(aef, s2_all)),
+        dict(key="X_diff", note="difference block only, eleven channels (104)",
+             **tt(aef, [c for c in s2_all if c.endswith("_diff")])),
+
         # -- AlphaEarth block: this one IS on the serving clock ----------------
         dict(key="A_nodiff", note="AlphaEarth without the diff block (128)",
              **tt(aef_nodiff, s2)),
@@ -160,9 +181,13 @@ def rungs(ctx) -> list[dict]:
     # choose between them -- that is S18's whole point, they all tie -- but a
     # subset picked on map detail still has to be shown not to *regress* on
     # plots before it is reported, and that is what these rungs are for.
+    # Selected from `s2_all`: a named subset carries its own channel filter and
+    # defaults to the deployed seven, so passing the whole block is what lets
+    # `diff10_*` reach the four added indices while `centre_m3s3_bf` still
+    # returns exactly its 78.
     out += [dict(key=f"N_{name}",
-                 note=f"named subset ({len(s2_subset_columns(s2, name))})",
-                 **tt(aef, s2_subset_columns(s2, name)))
+                 note=f"named subset ({len(s2_subset_columns(s2_all, name))})",
+                 **tt(aef, s2_subset_columns(s2_all, name)))
             for name in S2_SUBSETS if name != "full"]
     return out
 

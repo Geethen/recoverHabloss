@@ -47,6 +47,9 @@ Run
 ---
     python src/infer_patches.py                     # all patches in the manifest
     python src/infer_patches.py --limit 4           # smoke test
+    python src/infer_patches.py --rasters coarse3   # nine-transition map only
+    python src/infer_patches.py --model siam_s2off_state_pre \
+        --rasters coarse3_gated                     # the rare-class read
 """
 from __future__ import annotations
 
@@ -67,12 +70,23 @@ from infer_twotower import MERGED_COLORS, NODATA, write_class_raster
 from model_zoo import DEFAULT_INPUT
 from project_paths import project_data_dir
 
-#: The deployed recipe. One model, no comparison -- see CLAUDE.md.
+#: The deployed recipe, and the default. One model per run, no comparison --
+#: see CLAUDE.md. `--model` exists because the patch sample is a *labelling*
+#: instrument rather than a product: the two dead coarse3 classes are dead on
+#: the deployed map (`Artificial -> Cropland` takes 1 pixel in 21 million), so a
+#: round aimed at them has to be navigated by a recipe that surfaces them --
+#: `siam_s2off_state_pre` read through its cost gate. That is a choice about
+#: where to send labellers, not a change of deployed model.
 MODEL = "s2off_centre_m3s3_bf"
 #: Pixels subsampled per patch for the novelty distance. The nearest-neighbour
 #: distance is an average over a 250k-pixel patch; 4k draws pin its mean to
 #: about +/-0.003 and cost one 4k x 6.5k matmul.
 NOVELTY_SAMPLE = 4_000
+#: Raster products a patch can emit, selectable with ``--rasters``. All four
+#: come off the same forward pass, so choosing a subset saves disk and nothing
+#: else -- the statistics columns are computed either way. ``coarse3_gated`` is
+#: available only for a recipe that ships a cost vector (`c3_costs`).
+RASTERS = ("merged2", "coarse3", "coarse3_gated", "topchange")
 
 
 # --------------------------------------------------------------------------
@@ -132,7 +146,7 @@ def normalised_entropy(probs):
 
 # --------------------------------------------------------------------------
 async def run_patch(row, index, reader, entry, aef_cols, ref_t, out_dir,
-                    batch, seed, rng, write_rasters=True):
+                    batch, seed, rng, rasters=RASTERS, costs=None):
     from infer_s2 import predict, stack_aef_bands
 
     pid = row.patch_id
@@ -178,6 +192,14 @@ async def run_patch(row, index, reader, entry, aef_cols, ref_t, out_dir,
 
     merged_idx = probs.argmax(1)
     fine_idx = fine_probs.argmax(1)
+    # O3's coarse3 decision-cost gate, when the recipe ships one. It re-reads
+    # the coarse3 arg-max through a per-class multiplier and touches nothing
+    # else -- merged2, the entropy and the novelty columns are all identical
+    # with it and without it. Counted separately (`pxg_`) rather than replacing
+    # `px_`, because the whole point of the gate here is that the two reads
+    # disagree about the rare classes and the sampling design needs to see by
+    # how much.
+    gated_idx = (fine_probs * costs).argmax(1) if costs is not None else fine_idx
     ent = normalised_entropy(fine_probs)
 
     # The change-restricted arg-max. Two coarse3 classes are dead on the map --
@@ -216,8 +238,13 @@ async def run_patch(row, index, reader, entry, aef_cols, ref_t, out_dir,
         "novelty_mean": nov_mean, "novelty_p90": nov_p90,
     })
     tc_counts = np.bincount(top_change[aef_valid], minlength=len(fine_classes))
+    g_counts = np.bincount(gated_idx[aef_valid], minlength=len(fine_classes))
+    if costs is not None:
+        stats["gate_moved_px"] = int((gated_idx != fine_idx)[aef_valid].sum())
     for i, cls in enumerate(fine_classes):
         stats[f"px_{cls}"] = int(counts[i])
+        if costs is not None:
+            stats[f"pxg_{cls}"] = int(g_counts[i])
         # Pixels where `cls` is the best of the change classes, and how high
         # its posterior gets anywhere in the patch. The second is the one that
         # says whether a dead class is *absent* from this patch or merely
@@ -227,15 +254,24 @@ async def run_patch(row, index, reader, entry, aef_cols, ref_t, out_dir,
         stats[f"p999_{cls}"] = float(
             np.percentile(fine_probs[aef_valid, i], 99.9))
 
-    if write_rasters:
+    if "merged2" in rasters:
         codes = np.where(aef_valid, merged_idx, NODATA).astype("uint8")
         write_class_raster(out_dir / f"{pid}_merged2.tif",
                            codes.reshape(height, width), geobox,
                            list(classes), MERGED_COLORS)
+    if "coarse3" in rasters:
         fine_codes = np.where(aef_valid, fine_idx, NODATA).astype("uint8")
         write_class_raster(out_dir / f"{pid}_coarse3.tif",
                            fine_codes.reshape(height, width), geobox,
                            list(fine_classes), CLASS_COLORS)
+    if "coarse3_gated" in rasters and costs is not None:
+        # Same class list, same codes and the same .qml as `_coarse3.tif`, so
+        # the pair is an exact counterfactual for what the gate did here.
+        g_codes = np.where(aef_valid, gated_idx, NODATA).astype("uint8")
+        write_class_raster(out_dir / f"{pid}_coarse3_gated.tif",
+                           g_codes.reshape(height, width), geobox,
+                           list(fine_classes), CLASS_COLORS)
+    if "topchange" in rasters:
         # Same class list and therefore the same codes and the same .qml, so
         # the two rasters are directly comparable in QGIS. This one is the
         # navigation layer for the rare classes, not a product.
@@ -253,7 +289,7 @@ async def run_patch(row, index, reader, entry, aef_cols, ref_t, out_dir,
 
 async def main_async(args):
     from aef_loader import AEFIndex, DataSource, VirtualTiffReader
-    from infer_s2 import fit_models
+    from infer_s2 import _coarse3_costs, fit_models
 
     patches = pd.read_parquet(args.patches)
     if args.limit:
@@ -261,11 +297,22 @@ async def main_async(args):
     print(f"{len(patches)} patches from {args.patches}", flush=True)
 
     models, aef_cols, *_ = fit_models(
-        args.s2, args.seed, [MODEL], args.seeds, args.model_cache_dir,
+        args.s2, args.seed, [args.model], args.seeds, args.model_cache_dir,
         not args.no_model_cache)
-    entry = models[MODEL]
+    entry = models[args.model]
     ref_t, _ = novelty_reference()
     print(f"novelty reference: {ref_t.shape[1]} labelled plots", flush=True)
+
+    rasters = () if args.no_rasters else tuple(args.rasters)
+    # The cost vector is resolved once, before any patch runs, so a recipe that
+    # has none fails here rather than 90 patches into a 12-minute run.
+    costs = _coarse3_costs(entry["spec"], list(entry["models"][0].fine_classes_))
+    if "coarse3_gated" in rasters and costs is None:
+        raise SystemExit(f"--rasters coarse3_gated, but {args.model} ships no "
+                         f"coarse3 cost vector (no `c3_costs` in its recipe)")
+    print(f"model: {args.model}  gate: "
+          f"{'on' if costs is not None else 'none'}\n"
+          f"rasters: {', '.join(rasters) if rasters else 'none'}", flush=True)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = args.output_dir / f"patches_{stamp}"
@@ -283,7 +330,7 @@ async def main_async(args):
             try:
                 stats, cls, fine = await run_patch(
                     row, index, reader, entry, aef_cols, ref_t, out_dir,
-                    args.batch, args.seed, rng, not args.no_rasters)
+                    args.batch, args.seed, rng, rasters, costs)
             except Exception as exc:                     # noqa: BLE001
                 # One unreadable tile must not cost the other 99 patches. The
                 # failure is recorded as a row so the sampling design can see
@@ -302,7 +349,9 @@ async def main_async(args):
     frame.to_parquet(out_dir / "patch_stats.parquet", index=False)
     meta = {
         "created": datetime.now().isoformat(timespec="seconds"),
-        "model": MODEL, "seeds": args.seeds, "seed": args.seed,
+        "model": args.model, "seeds": args.seeds, "seed": args.seed,
+        "coarse3_gate": entry["spec"].get("c3_costs"),
+        "rasters": list(rasters),
         "resolution": RESOLUTION, "years": list(YEARS),
         "patches": str(args.patches),
         "n_patches": int(len(frame)),
@@ -322,13 +371,18 @@ def main() -> None:
                         default=project_data_dir("patches", "patches.parquet"))
     parser.add_argument("--limit", type=int, default=0,
                         help="only the first N patches (smoke test)")
+    parser.add_argument("--model", default=MODEL,
+                        help=f"recipe from infer_s2.fit_models (default {MODEL})")
     parser.add_argument("--s2", type=Path,
                         default=project_data_dir(
-                            "embeddings", "s2_features_habloss_recover.parquet"))
+                            "embeddings", "s2_features_habloss_recover_10m.parquet"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--seeds", type=int, default=5,
                         help="seed-ensemble size; 5 is the deployed setting")
     parser.add_argument("--batch", type=int, default=200_000)
+    parser.add_argument("--rasters", nargs="+", choices=RASTERS,
+                        default=list(RASTERS),
+                        help="which GeoTIFFs to write (default: all three)")
     parser.add_argument("--no-rasters", action="store_true",
                         help="statistics only, no GeoTIFFs")
     parser.add_argument("--output-dir", type=Path,

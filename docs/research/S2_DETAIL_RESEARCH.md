@@ -105,8 +105,21 @@ an idea is a column subset:
 | `S2g` | Sobel gradient magnitude | edge strength — high on roads and roofs, low inside vegetation |
 | `S2p` | 8×8 mean-pooled image | a coarse picture rather than a statistic, for a tower that learns its own texture |
 
-Channels: blue, green, red, NIR + NDVI, NDWI, brightness. Each family exists for
-2018, 2024 and their difference.
+Channels: **eleven, all native 10 m** — blue, green, red, NIR + NDVI, NDWI,
+brightness (`CHANNELS_BASE`, the deployed seven) + EVI2, GRVI, BSI, CI
+(`CHANNELS_10M`, added in S19). Each family exists for 2018, 2024 and their
+difference. `S2p` is the one exception and stays on the base seven: at 64
+columns per channel per year it is three quarters of the table.
+
+A subset is therefore a choice on **three** axes — families, channels, years —
+and `s2_subset_columns` filters on all three. **The channel and year filters
+default to the deployed seven and to all three year blocks**, which is what
+keeps `s2off_centre_m3s3_bf` at exactly 78 columns after the channel expansion.
+Anything that consumes the whole stat block instead of a named subset must say
+which block it means by calling `s2_base_columns`; `tests/test_s2_subset_axes.py`
+is the guard on both. The table is now
+`s2_features_habloss_recover_10m.parquet` — see the S19 environment note for
+why the old filename could not be reused.
 
 ## Metrics
 
@@ -316,10 +329,12 @@ AOI**, so nothing here can be scored the way sections S/T are.
 | # | idea | status | result |
 | --- | --- | --- | --- |
 | U1 | **Guided / joint-bilateral refinement.** Use the S2 VNIR composite as the guide image for edge-aware filtering of the class-probability raster. Cheap, no training, and the classic fix for "context model, blurry boundaries". | **NEG — it buys alignment by eating the change class** | `refine_map.py`, guided filter (He et al. 2013) over the one-hot class stack, S2 NIR 2024 as guide, on `oslo_mc_s2_drop0.7` (baseline: edge 0.0935, medseg 4 px, align 1.6080, **13,300 change px**). It does exactly what it promises structurally — **boundary alignment rises to 1.677 (r=1) and 1.781 (r=2), and median segment goes 4 → 9–12 px** — but the change class does not survive: **−11.7% at the mildest setting (r=1, eps=1e-3) and −32.8% at r=2**, against only 1.0–2.7% of pixels moved. Change is 0.45% of the map and spatially fragmented, so a neighbourhood arg-max is close to a majority vote and the minority class loses every tie. **This is the same shape as the gate suppression: smoothing of any kind preferentially destroys the class the user cares about.** A probability-level variant would be strictly stronger (a confident change pixel could outvote its neighbours) and needs `infer_s2.py` to persist posteriors — that is the version worth trying, not this one. |
-| U2 | **Segment-constrained averaging (SAM / HQ-SAM).** Segment the S2 composite, average probabilities within each segment. HQ-SAM's contribution is boundary fidelity, which is exactly the failure mode. Cost: a ViT over every AOI tile — check it is worth it over U1 before building it. | TODO | |
+| U2 | **Segment-constrained averaging (SAM / HQ-SAM).** Segment the S2 composite, average probabilities within each segment. HQ-SAM's contribution is boundary fidelity, which is exactly the failure mode. Cost: a ViT over every AOI tile — check it is worth it over U1 before building it. | **NEG — built and measured, Iteration 10** | SAMRefiner (ICLR 2025) tested directly rather than assumed under U1b's argument, since a prompt-based refiner is not an averaging scheme. From a 3×3 seed it is a **no-op** (IoU 1.000 with its own input); from the NDVI built mask it **hurts** (`boundary_align` 1.144 → 1.113, built fraction dilated 0.387 → 0.484). SAM's *segmentation* is real — `boundary_align` 1.277 against a 0.998 random-partition control, 100% of chips — but the mask containing the plot centre is bimodal (median 126 px, **q75 ≈ 4,090 of 4,096**). Motive largely removed by **U4**. |
+| U4 | **The radius sweep behind the deployed feature block.** Fell out of U2's baseline failing to reproduce. | **BUG — 3 px won on a tie-blind rank** | `analyse_ndvi_threshold.auc` gave tied values distinct ranks in array order, with the Artificial class concatenated first. Built fraction over 3×3 has ten distinct values and was the column most flattered: **0.762 → 0.686**, against 5 px at 0.685. The deployed block is unchanged and 3 px still leads — by 0.001, not 0.067. Fixed to mid-ranks; verified against sklearn. |
 | U0 | **Track detail as a number instead of an impression** (`map_detail_metrics.py`). Label-free, so it runs on Oslo where no plots exist. Four metrics: `edge_density`, `segments_per_mp` + `median_segment_px`, `hf_power_ratio`, and `boundary_align` (mean S2 gradient on class boundaries ÷ mean over all pixels). | **DONE — and it reproduces the user's visual judgement** | Oslo, same 2.95 M pixels: `aef_only` edge density 0.079, **median segment 5 px**, 1,992 segments/Mpx · `both` 0.111, **1 px**, 5,958 · `tess_only` 0.180, **1 px**, 15,991. **Tessera more than doubles edge density while collapsing the median segment to a single pixel — that is speckle, not detail**, and it is why the AlphaEarth-only map read better by eye. **`edge_density` alone is an actively misleading detail metric; it must be read against `median_segment_px`.** `boundary_align` is the quality half and needs an S2 composite over the AOI — blocked on S7. |
 | U1b | **Probability-level refinement** — refine the posteriors rather than the hard class map, so a confident change pixel can outvote its neighbours. The strictly stronger version of U1. | **NEG — worse than U1, and the reason inverts the premise** | At matched settings (r=1, eps=1e-3) it buys more alignment (**1.7293** vs one-hot's 1.6770) and costs **nearly double the change class: −22.2% vs −11.7%**; at r=2 it reaches −44.1%. **The premise was backwards.** Change pixels are the model's *least confident* predictions — median top-probability **0.493 against stable's 0.751**, median margin **0.155 against 0.570**, and **34.9% of change pixels sit within 0.1 of flipping versus 7.0% of stable ones**. So one-hot's information loss was accidentally *protective*: it promotes a 0.49-confidence change pixel to a full 1.0 vote and lets it compete with a confident stable neighbour. Handing the filter the true posteriors just tells it which pixels are cheap to erase. |
 | U3 | **A scorable proxy for U1/U2.** The stored 64×64 patches make a patch-level read possible: refine over the patch, score the centre pixel against its label. **Blocked** — it needs AlphaEarth at all 4,096 patch pixels, and AEF was only ever extracted at points. Resolving this is a GEE re-extraction, and it is what would turn U1/U2 from "looks sharper" into a number. | BLOCKED | |
+| U5 | **Phoenix (ECCV 2026), a *learned* mask refiner** (`phoenix_refine_map.py`). The user's ask. Same slot as U1/U2 and it inherits SAMRefiner's prompt sampler outright, but its claim is training-side — adversarial mask perturbation + contrastive refinement, i.e. a refiner that has seen realistic segmentation errors — so U1b's smoothing argument does not cover it any more than it covered U2. Built and measured. | **NEG for deployment — and it fails in the opposite direction to U1** | Deployed Oslo map, 16,676 change px, seed floor 0.8423. Three regimes: the paper's own **semantic** protocol **+436.8%** change, align **1.6260 → 1.3579**, the map visually destroyed; **binary** (change mask alone, whole 1024 tile) **+270.0%**, medseg 5 → 180 px; **crop** (each component in its own 256 px window, the most favourable framing) **+62.2%**, IoU with input **0.3656**. **Every refiner in section U now fails on the change class, but U1/U1b erred by omission (−11.7%/−22.2%) and Phoenix errs by commission (+62% to +437%)** — a smoothing refiner deletes a marginal class, a generative one invents objects around it. **The one positive is real and controlled**: crop-regime `boundary_align` **1.4254 → 1.4944**, against **1.4478** for uniform growth to the identical 27,056 px and **1.0042** for randomly relocated blobs — so ~2/3 of the gain is content, not area. It is bought at +62% change pixels and an input-agreement less than half the map's own seed floor. **The structural reason is the object size**: the change class is 992 components with **median 6 px, q75 16 px, max 832 px**, and 650 of them are under 10 px; those sub-10 px components take median area ratio **2.33** and supply **57% of all added pixels**, while components over 100 px sit at ratio ~1.0–1.3 and IoU 0.49–0.66. Deterministic — two independent runs agree on **100.0000%** of pixels. |
 
 ### V. Deployment
 | # | idea | status | result |
@@ -531,6 +546,396 @@ finding on Tessera exactly (single −16.0% → 5-seed −16.8%). Better-calibra
 probabilities do not soften the suppression, so it is a property of what the
 modality says rather than of how confidently one seed says it. That is now
 established independently on both detail modalities.
+
+**Iteration 10 (2026-07-31) — U2 built and closed on measurement; and the radius sweep that justified the deployed feature block was wrong.**
+
+The user asked for [SAMRefiner](https://github.com/linyq2117/SAMRefiner) (ICLR
+2025) as a route to map detail. It is worth separating from the U2 row it lands
+on: U2 was written as *segment-constrained averaging*, and Iteration 8 closed it
+by the smoothing argument. SAMRefiner is not an averaging scheme — it is a
+prompt-based refiner (distance-guided points, context-aware elastic boxes,
+Gaussian mask prompts, IoU-adaptive fusion), so the closing argument does not
+automatically cover it. It was therefore built and measured. SAM ViT-B
+(checksum-verified), the 64×64 chips, 6,416 of 6,492 plots covered. Its
+`FastGeodis` dependency is only ever called with `lamb=0.0`, which *is* the
+Euclidean distance transform, so scipy substitutes for it exactly — no CUDA
+extension needed.
+
+**U2a — SAMRefiner prompted from the 3×3 centre box: a no-op.** Median IoU with
+its own input **1.000**; 97% of outputs still exactly 9 px. A 3-pixel seed hands
+SAM box, point and mask prompts that all assert the same region, and returning it
+unchanged is the right answer to an over-determined question. Nothing about the
+method is being exercised at this scale.
+
+**U2b — SAM does see 10 m Sentinel-2, and this is the one positive.** Unprompted,
+the automatic mask generator scores `boundary_align` **1.277 against 0.998 for a
+random-partition control**, positive on 100% of chips. The control is load-bearing:
+any partition of a smooth image scores above 1 from gradient autocorrelation
+alone, so the bare 1.277 is meaningless without it. Median mask 14 px — fine, but
+not the 1 px speckle U0 caught Tessera producing.
+
+**U2c — given a genuine chip-scale coarse mask, SAMRefiner mildly hurts.** On the
+NDVI built/vegetation mask: IoU 0.915 with its input, `boundary_align` **down**
+1.144 → 1.113, and built fraction dilated 0.387 → 0.484.
+
+**So the refiner is not the lever; the segmentation is.** That reframes it into
+something scorable on inputs rather than on the output raster — replace the
+detail tower's fixed square windows with the SAM segment containing the plot
+centre, on the theory that a square straddles boundaries and an object does not.
+**That reframing is what turned up the real result, and it is not about SAM.**
+
+**U4 — the 3 px radius was chosen on a tie-blind AUC.** Testing the segment
+window against the recorded yardstick reproduced the baseline at 0.685 where the
+record says **0.762**. The gap is not subsampling (0.685 sits dead centre of the
+balanced-subsample distribution, mean 0.690, sd 0.015) — it is that
+`analyse_ndvi_threshold.auc` ranked with `ranks[argsort(v)] = arange(1, n+1)`,
+giving tied values *distinct* ranks in array order. `values` puts the Artificial
+class first, so every tie resolved in its favour.
+
+| window | unique values | recorded | tie-aware |
+| --- | --- | --- | --- |
+| 1 px | 2 | 0.669 | 0.667 |
+| **3 px** | **10** | **0.762** | **0.686** |
+| 5 px | 26 | 0.695 | 0.685 |
+| 9 px | 82 | 0.684 | 0.681 |
+| 25 px | 620 | 0.664 | 0.665 |
+| 64 px | 2402 | 0.648 | 0.648 |
+
+Built fraction over a 3×3 window has **ten distinct values** — it is almost all
+ties, and it was the single column the bug flattered. Columns with few ties are
+unaffected to within 0.001, **which is exactly why this survived: only the winner
+was wrong.** `auc()` now uses mid-ranks and agrees with sklearn on tie-heavy and
+tie-free data alike; `build_s2_features.py`'s justifying comment is corrected.
+
+**The deployed feature block does not change** — 3 px still comes first. But it
+leads 5 px by **0.001, not 0.067**, and the curve is flat out to 9 px. Any future
+claim resting on "3 px is decisively the right radius" should be re-read against
+this table; the honest statement is that the model is given all radii and the
+choice is nearly free.
+
+**U2 verdict: NEGATIVE, and now closed on measurement rather than on argument.**
+Iteration 8's prediction was right for a reason it did not name — not only does
+segment-constrained averaging smooth, but the segment SAM offers at plot scale is
+bimodal: the smallest mask containing the centre has median area ~126 px but
+**q75 ≈ 4,090 of 4,096**, so a quarter of the time the "object" is the whole-chip
+background. **And U4 removes most of the motive.** The corrected sweep spans only
+0.686 (best window) to 0.648 (whole chip), so a perfectly object-aligned window
+can buy at most ~0.04 on this proxy — against S14's finding that the entire S2
+detail tower is worth +0.0013 change-F1 at 15 seeds under the deployed read.
+Chasing a fraction of 0.04 through a ViT at serving is not a trade this project
+should take. **The unrun step, if anyone revisits it, is the matched-area
+control** — SAM segment against a *square box of the same area* — since only that
+separates alignment from size, and nothing above does.
+
+**Iteration 11 (2026-08-14) — U5: Phoenix, and the matched-area control Iteration 10 asked for.**
+
+The user asked for [Phoenix](https://phoenix-eccv26.github.io) (ECCV 2026,
+`naver-ai/Phoenix`). It lands on the same row as U1 and U2 and it imports
+SAMRefiner's prompt sampler verbatim, so the temptation was to close it by
+argument for the third time. That would have been wrong twice over: its claim is
+**training-side** (adversarial mask perturbation, contrastive refinement — a
+refiner that has seen realistic segmentation errors rather than random geometric
+ones), and the result below is not the one the standing argument predicts.
+
+`phoenix_refine_map.py`, `phoenix_efficientvit_xl1`, deployed Oslo map
+(`s2_20260731_100710`, 16,676 change px), S2 RGB 2024 as the image, S2 NIR 2024
+as the `boundary_align` reference. **Seed floor first, per CLAUDE.md**:
+`compare_map_iou.py` on the two disjoint seed blocks gives change-class IoU
+**0.8423** — that is what any edit has to be read against.
+
+| regime | change px | Δ | IoU w/ input | edge | medseg | align |
+| --- | --- | --- | --- | --- | --- | --- |
+| input map | 16,676 | — | — | 0.0924 | 6 | 1.6260 |
+| **semantic** (paper protocol, 4 classes) | 89,514 | **+436.8%** | 0.1134 | 0.0284 | 13 | **1.3579** |
+| input change mask (binary read) | 16,676 | — | — | 0.0079 | 5 | 1.4254 |
+| **binary** (change only, 1024 tile) | 61,695 | **+270.0%** | 0.0991 | 0.0086 | **180** | 1.5743 |
+| **crop** (256 px per component) | 27,056 | **+62.2%** | **0.3656** | 0.0103 | 13 | **1.4944** |
+| crop, **ViT-H** encoder | 41,025 | +146.0% | 0.2876 | 0.0145 | 27 | 1.5376 |
+
+**Every refiner in section U now fails on the change class — but this one fails
+in the opposite direction, and that is the finding.** U1 and U1b removed change
+(−11.7%, −22.2%); Phoenix adds it (+62% at best, +437% at worst). Iteration 8
+explained the removals by the change class being *barely won* (median margin
+0.155), and that explanation was right but incomplete: it accounts for anything
+that lets neighbours out-vote a change pixel, and says nothing about a refiner
+that does not vote at all. **Phoenix does not average, it draws.** Handed a 6 px
+blob it returns the object it thinks is there, and at 10 m there is no object —
+the change class is 992 components with median **6 px**, q75 **16 px**, max 832
+px. The generalisation that covers both halves of section U is therefore not
+"smoothing destroys change" but **anything that re-decides the change class at
+neighbourhood scale swamps it, because it is 0.56% of the map in pieces smaller
+than the process's own support.**
+
+**The size breakdown is the mechanism, and it is not uniform.** Per component,
+crop regime:
+
+| input size | n | median IoU | median area ratio | px added |
+| --- | --- | --- | --- | --- |
+| <10 px | 650 | 0.200 | **2.33** | **+6,365** |
+| 10–30 px | 210 | 0.444 | 1.08 | +1,408 |
+| 30–100 px | 104 | 0.460 | 0.84 | +281 |
+| 100–300 px | 26 | 0.493 | 1.30 | +3,008 |
+| >300 px | 2 | 0.657 | 1.05 | +30 |
+
+**57% of every added pixel comes from components under 10 px**, and above 30 px
+the method roughly preserves area and moves the boundary instead. So Phoenix is
+not indiscriminately dilating; it is doing something reasonable on the few
+objects that are objects, and inventing objects around the 650 specks that are
+not.
+
+**Capacity makes it worse, which is the cleanest evidence that the scale is the
+problem.** The crop arm re-run with the paper's headline **ViT-H** encoder
+(`phoenix_vit_h_instseg`, 2.5 GB, 244 s over the same 992 components):
+**+146.0%** change against EfficientViT-XL1's +62.2%, IoU with input **0.2876**
+against 0.3656, `boundary_align` 1.5376, medseg 5 → 27 px. The size breakdown
+says exactly where it went — the sub-10 px components take median area ratio
+**8.00** instead of 2.33, while the ≥30 px bins are unchanged to within 0.35
+(1.18/1.22/0.84 against 0.84/1.30/1.05) and their IoU is flat (0.448/0.481/0.654
+against 0.460/0.493/0.657). **A stronger encoder is more confident about the
+object it is hallucinating and no better on the objects that exist.** Anyone
+tempted to read the alignment column as a ranking should note ViT-H "wins" it
+(1.538 vs 1.494) purely by drawing bigger.
+
+**The one positive is real, and this time the matched-area control Iteration 10
+asked for was run.** Crop-regime `boundary_align` goes **1.4254 → 1.4944**.
+Against:
+
+- **1.4478** — the input change mask grown uniformly (outside distance transform,
+  thresholded) to *exactly* the same 27,056 px. Area alone buys +0.022 of the
+  +0.069.
+- **1.0042** — the same blobs randomly relocated. The metric is doing its job;
+  the input's own 1.4254 is signal, not gradient autocorrelation.
+
+So roughly two thirds of the alignment gain is content. **Phoenix genuinely sees
+10 m Sentinel-2**, which strengthens U2b rather than repeating it: SAM's
+*segmentation* was already known to be real (1.277 vs a 0.998 control), and now a
+refiner's *edit* beats a matched-area null. It is still not a trade to take: the
+cost is +62% change pixels and agreement with its own input at **0.3656 against a
+map that reproduces itself at 0.8423** — the refinement is more than twice as
+large as the map's entire seed uncertainty, on an AOI where nothing can be scored.
+
+**Two protocol notes, both of which would have produced a wrong verdict.**
+(1) The paper's semantic composition assumes classes are objects. On a transition
+map `merge_regions` collapses each stable class into one whole-tile "object", the
+arg-max over class-probability channels then hands most of the AOI to whatever the
+small confident components claim, and the map is destroyed — `edge_density` falls
+69%, `boundary_align` falls to **1.3579, below every other row in this
+document**. That is a protocol mismatch, not a measurement of Phoenix's
+refinement, and it is why the binary and crop arms exist. (2) The first crop run
+used `merge_regions` too and read **−83.9%**, which looks exactly like a U1-style
+suppression result and is an artefact: on a fragmented mask that function fuses
+550 blobs into 41 AOI-spanning regions, and a window centred on a sprawling
+region covers a fraction of it. `--crop-merge` reproduces it; the default is raw
+components.
+
+**The product is `--regime classmap`: a transition map in, a transition map
+out.** Written as `<source stem>_phoenix.tif` beside every map it was applied to,
+carrying that map's codes, palette and legend so it opens in QGIS next to its
+source. Only the change classes are refined, each component in its own crop
+window; the stable classes are the ground and come back at IoU 0.968–0.997.
+Pixels the refiner drops fall back to the stable transition for the state they
+started in (`X -> Y` becomes `X -> X`) — in a transition map "nothing happened
+here" is a class, not an absence, and keeping the input class instead would make
+the refiner structurally incapable of ever removing change. Applied to five maps:
+
+| map | change px | Δ | IoU w/ input | agreement |
+| --- | --- | --- | --- | --- |
+| `s2off_centre_m3s3_bf` merged2 | 16,676 → 27,035 | +62.1% | 0.3660 | 99.31% |
+| `s2off_centre_m3s3_bf` coarse3 | 16,609 → 29,671 | +78.6% | 0.3502 | 99.24% |
+| `siam_s2off_state_pre` merged2 | 10,399 → 19,465 | +87.2% | 0.3446 | 99.51% |
+| `siam_s2off_state_pre` coarse3 | 9,935 → 18,463 | +85.8% | 0.3418 | 99.52% |
+| `siam_s2off_state_pre` coarse3_gated | 10,674 → 21,055 | +97.3% | 0.3370 | 99.45% |
+
+**The inflation is a property of the target, not of one map**: five maps from two
+different models, change fractions 0.35–0.56%, all land in +62% to +97% with IoU
+0.34–0.37. On coarse3 the rare classes move most in relative terms —
+`Artificial -> Cropland` 266 → 1,102 px, `Nature -> Cropland` 34 → 246 — which is
+worth noting *against* section O's result that those classes are coverable:
+Phoenix does not find them, it enlarges the handful of pixels already there.
+
+**The rasters, in one place: `data/inference/phoenix_oslo_qgis/`** — numbered so
+the QGIS browser sorts them into the order you would add them (`00` backdrop,
+`01`/`02` the map being refined, then each arm's change mask beside its delta,
+`40` the semantic output). All 1722×1716, EPSG:32632, paletted with overviews and
+a `.qml`. **Sidecars are written, never copied**: the binary change masks first
+went out carrying the merged2 four-class legend, so QGIS labelled value 1
+"Artificial -> Vegetation" when it means *change* — the same code→label trap as
+the palette-order bug, caught by checking each raster's present values against
+its own legend.
+
+**Layers to look at rather than read.** `phoenix_delta_map.py` writes a
+four-category delta raster per arm — change both maps agree on, added, removed,
+stable — plus the *stretched* 8-bit composite Phoenix actually saw, under
+`data/inference/phoenix_oslo_explore/`. The delta is the layer that makes the
+size story visible in one glance: the crop arm keeps **70.2%** of the input
+change and adds 15,347 px, the ViT-H arm keeps 77.3% and adds 28,138, the tile
+arm keeps only **42.4%** and adds 54,626. `phoenix_export_panels.py` +
+`phoenix_compare_template.html` build a swipe-comparison page over the six
+windows of highest disagreement (same template-substitution pattern as
+`umap_page_template.html`).
+
+Deterministic: two independent full runs agree on **100.0000%** of pixels
+(max |Δcode| = 0), so a single pass is the measurement here and the 3-seed rule
+in `AUTORESEARCH.md` — which is about stochastic *training* — is satisfied by the
+input map's floor rather than by repetition.
+
+**Verdict: NEGATIVE for deployment, positive for the record.** If map-level
+refinement is ever revisited, Iteration 8's prescription still stands and now has
+a number attached: the design has to **protect the change class explicitly**, and
+the place to apply a learned refiner is the ~130 components above 30 px, where it
+holds area (ratio 0.84–1.30) and lifts IoU to 0.46–0.66 — not the 650 specks that
+supply the damage. That is a size-gated refiner, and nothing in this project
+currently needs one.
+
+**Environment, recorded because it blocks everything torch on this machine.** The
+GPU is now an **RTX Pro 6000 Blackwell (sm_120)** and the geo env's torch
+(2.5.1+cu121) has no kernels for it — `torch.cuda.is_available()` returns True
+and the first real op dies with "no kernel image is available for execution on
+the device". The ledger's timings (S8: "one A40") predate this. Phoenix runs from
+`/home/geethen.singh/.cache/phoenix-test/venv` (torch 2.11.0+cu128, arch list
+through sm_120) layered over the geo env with `--system-site-packages`;
+`FastGeodis` does not build and is stubbed with scipy, exact for the `lamb=0`
+calls the sampler makes. **`/tmp` is 3.7 GB and was 97% full** — checkpoints do
+not fit there.
+
+### S19. Differences instead of states, and four more 10 m indices (user's proposal)
+
+**The question.** The deployed detail tower reads every statistic three times —
+at 2018, at 2024 and as their difference — so two thirds of it is a *state* read,
+and a state read is what AlphaEarth already supplies. The proposal was to drop
+the single-date blocks and give the tower only what moved, over the 10 m bands
+and 10 m-derivable indices (no SWIR, no red edge, no 20 m resample — which also
+keeps section Q's "do not extract SWIR" intact).
+
+**What was built.** Four indices computable from B2/B3/B4/B8 alone, chosen to
+span axes NDVI does not: `evi2` (greenness past NDVI's saturation), `grvi`
+(green−red, goes negative on senescent and ploughed ground), `bsi` (bare/built,
+the SWIR-free four-band form) and `ci` (red−blue coloration: red roofs and
+iron-rich soil against grey concrete). GNDVI was considered and dropped — it is
+exactly −NDWI. Then the year and channel axes were added to `S2_SUBSETS`, and
+four arms cut across them.
+
+**Radiometry, checked before trusting any difference.** A difference of two DN
+composites inherits both dates' calibration, and L2A baseline 04.00 carries a
+`BOA_ADD_OFFSET` of −1000 that would sit entirely in the 2024 end. It is not
+present here: the four band medians agree between 2018 and 2024 to 2–6%
+(blue 537/559, green 803/820, red 844/894, NIR 2637/2658). Index differences are
+ratio differences and are immune to it regardless; band differences are only
+usable because of this check.
+
+**Plot metrics, 15 seeds, gate-off read, all arms in one block** (the historical
+rows were fitted under a different torch, so the controls were re-run here rather
+than quoted). Δ and the win count are paired seed by seed against the deployed
+78:
+
+| rung | cols | change-F1 | Δ | macro | coarse3 | artStab | **art→veg** | Δ | won |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `N_centre_m3s3_bf` (deployed) | 78 | 0.6565 ±0.0038 | — | 0.6951 | 0.5945 | 0.6451 | 0.1925 | — | — |
+| `R0_deployed` | 204 | 0.6557 | −0.0008 | 0.6940 | 0.5947 | 0.6404 | 0.1932 | +0.0007 | 5/15 |
+| `S_none` (no S2 at all) | 0 | 0.6564 | −0.0001 | 0.6910 | 0.5961 | 0.6433 | 0.1977 | +0.0052 | 6/15 |
+| `S_2024` (single date) | 68 | 0.6546 | −0.0019 | 0.6932 | 0.5936 | 0.6416 | 0.1910 | −0.0015 | 5/15 |
+| `S_nodiff` (both states) | 136 | 0.6557 | −0.0008 | 0.6935 | 0.5918 | 0.6398 | 0.1970 | +0.0045 | 6/15 |
+| `X_full` (11 ch, all years) | 312 | 0.6534 | −0.0030 | 0.6919 | 0.5920 | 0.6404 | 0.1963 | +0.0038 | 4/15 |
+| `N_x10_centre_m3s3_bf` | 114 | 0.6561 | −0.0004 | 0.6945 | 0.5940 | 0.6451 | 0.1923 | −0.0002 | 7/15 |
+| `S_diff` | 68 | 0.6524 | −0.0041 | 0.6926 | 0.5904 | 0.6571 | **0.1790** | −0.0135 | **14/15** |
+| `X_diff` (11 ch) | 104 | 0.6547 | −0.0018 | 0.6950 | 0.5934 | 0.6586 | **0.1790** | −0.0135 | **14/15** |
+| `N_diff_centre_m3s3_bf` | 26 | 0.6544 | −0.0021 | 0.6959 | 0.5901 | 0.6609 | **0.1811** | −0.0114 | **14/15** |
+| `N_diff10_centre_m3s3_bf` | 38 | 0.6540 | −0.0024 | 0.6938 | 0.5889 | 0.6584 | **0.1811** | −0.0114 | **13/15** |
+| `N_diff10_bfstate_centre_m3s3` | 48 | 0.6561 | −0.0003 | 0.6949 | 0.5939 | 0.6573 | **0.1802** | −0.0123 | **14/15** |
+
+**Two clean readings, and they separate the user's two proposals.**
+
+1. **The channel axis is closed.** Adding the four indices while keeping the year
+   structure does nothing: `N_x10` (114) is −0.0004 change-F1 and −0.0002 art→veg
+   against the deployed 78, and `X_full` (312) is worse than the 204 it extends.
+   The one place the extra channels pay is *inside* a diff-only tower —
+   `X_diff` beats `S_diff` by +0.0023 change-F1 at the same art→veg — and that is
+   inside the seed spread. **Four more 10 m indices are not a lever.** This is the
+   same shape as section Q's band ladder: more S2 channels do not move this model.
+
+2. **The year axis is a real lever on exactly one metric.** Every diff-only arm —
+   four of them, spanning 26 to 104 columns and 7 to 11 channels — lands at
+   art→veg 0.179–0.181 against 0.192–0.198 for every arm that keeps the endpoint
+   states, winning 13–14 of 15 paired seeds. Stable built-up recall moves the same
+   way (+0.012 to +0.016). No state-carrying arm moves either. Change-F1, macro-F1
+   and coarse3-F1 tie throughout, as S18 said they must.
+
+   **It is a trade, not a free win.** Stable *vegetation* returned as built-up
+   moves the other way, +0.0023 to +0.0028, and loses 13–15 of 15 seeds. This is
+   the same two-sided boundary the class-weighting section found: the year axis
+   moves the *ratio* of the two built-up errors, not their sum. Balanced accuracy
+   nets out at +0.0025 to +0.0044.
+
+**Map evidence, Oslo, two disjoint 5-seed blocks.** Self-IoU floors first, as
+CLAUDE.md requires — change-class IoU of each model against itself across seed
+blocks:
+
+| model | cols | self-IoU (change) | vs deployed, same block | edge density | boundary align | change px |
+| --- | --- | --- | --- | --- | --- | --- |
+| `s2off_centre_m3s3_bf` | 78 | 0.8361 | — | 0.0942 | 1.6250 | 17,225 |
+| `s2off_diff10_centre_m3s3_bf` | 38 | 0.8351 | **0.8348** | 0.0883 | 1.6143 | 17,668 |
+| `s2off_diff10_bfstate_centre_m3s3` | 48 | 0.7623 | 0.8184 | **0.0769** | 1.5876 | 15,940 |
+
+**The pure diff-only tower reproduces the deployed map to within the floor.**
+0.8348 against floors of 0.8361 and 0.8351 — it agrees with the deployed map as
+well as the deployed map agrees with itself. That is a **simplification result**:
+half the columns, no endpoint states, same map. It is not an improvement, and it
+does cost 6% of edge density.
+
+**Keeping built fraction as a state is where the built-up gain shows up, and it
+is bought with structure.** `diff10_bfstate` puts 10% more area into stable
+Artificial (1.194 M px vs 1.085 M, against a 1.8% seed-block wobble of its own),
+which is the map form of the art→veg gain — but edge density falls 18.4% and
+boundary alignment 0.037, and change pixels fall 7.5%. That is the smoothing
+signature the standing rule names: *spatial smoothing removes change pixels
+first, every time*. `s2off_slim`'s 0.0902 → 0.0788 was called visibly worse in
+S18 at the same magnitude, so this fails S18's selection rule on its face.
+
+**Verdict.** Negative for deployment; positive and specific for the record.
+
+* Do not re-run the channel expansion as a lever. It is measured flat at 15
+  seeds on the plot read and it does not appear on the map.
+* `diff10_centre_m3s3_bf` (38 cols) is the arm to keep in mind if the detail
+  block ever has to shrink — it is the cheapest thing found that still lands
+  inside the deployed map's own reproducibility.
+* The built-up finding is real but is a **ratio trade with a structure cost**,
+  not the free move the conformal and CRFE routes were. If stable built-up is
+  reopened, the standing better answers are still Mondrian conformal (+0.036
+  free) and the CRFE gate.
+* **The deployed model does not change.** CLAUDE.md settles it on the user's
+  visual read, and nothing here clears the bar to reopen that.
+
+**Environment, and a trap worth writing down.** The share is CIFS
+(`//netapp3-cifs.nina.no`, krb5, `soft`). Rewriting the 57 MB feature parquet **at
+its existing path** left the path permanently unreadable — `open`, `stat` and
+even `unlink` all return EIO while `ls` still shows the file at the right size,
+and an identical file written under any other name reads fine. It happened twice,
+once via `mv` onto the name and once by writing the name directly. Hence the
+rename to `s2_features_habloss_recover_10m.parquet`; the seven-channel table is
+kept beside it as `..._c7_backup.parquet`, and the poisoned path is still in the
+directory and cannot be removed. **Write a new filename; never rewrite a large
+parquet in place here.** Torch runs from
+`/home/geethen.singh/.cache/phoenix-test/venv` (the GPU note above), which needs
+`PROJ_DATA`/`PROJ_LIB`/`GDAL_DATA` pointed at the geo env's `share/` or every
+rasterio CRS lookup dies with "The EPSG code is unknown".
+
+**Layers to look at rather than read: `data/inference/oslo_s19_qgis/`**, built by
+`compare_maps_qgis.py` — numbered so QGIS sorts them into the order you would add
+them (`00` Sentinel-2 backdrop, `10` each model's merged2 and coarse3 beside each
+other, `20` a delta raster per arm). The delta is the layer that makes the
+verdict visible in one glance: against the deployed map, `diff10` adds 1,792
+change px and removes 1,349 (merged2 IoU 0.8348), while `diff10_bfstate` adds
+only 1,117 and removes 2,402 (0.8081) — it is not relocating change, it is
+deleting it, which is what the 18% edge-density drop is made of. Sidecars are
+copied for the maps (each raster's own legend is the only thing that knows what
+code 2 means) and written fresh for the deltas, whose four categories are not
+land-cover classes and are deliberately not on the merged2 palette.
+
+Ladder: `data/analysis_results/s2_diff10/s2off_cost_ladder.csv`. Map comparison:
+`data/analysis_results/s2_diff10/s2_subset_map_comparison.csv`. Rasters:
+`data/inference/s2_20260824_163001` (seeds 0–4) and `s2_20260824_163144`
+(seeds 5–9); the deployed map re-run alone at `s2_20260824_170440` is
+pixel-identical to its copy in the first.
 
 ## FINAL MODEL — `s2off_centre_m3s3_bf` (settled 2026-07-27)
 
