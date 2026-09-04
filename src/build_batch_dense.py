@@ -32,10 +32,30 @@ Three things follow from baking it:
 THE RECIPE MUST NOT DRIFT
 -------------------------
 `series_for` below is `denseFetchLive()` in label_app.html, in Python. Same
-collection, same pre-filter, same mask, same 30 m buffer, same 20 m scale. Two
-recipes for one line is the same hazard as `growingSeason()` one level up, and
-here it would be worse: the baked series and the live fallback would disagree
-for the half of the batch that has a sidecar.
+collection, same pre-filter, same mask, same cell, same scale. Two recipes for
+one line is the same hazard as `growingSeason()` one level up, and here it would
+be worse: the baked series and the live fallback would disagree for the half of
+the batch that has a sidecar.
+
+THE FOOTPRINT IS THE LABELLING CELL
+-----------------------------------
+This series read a 30 m *radius* circle at 20 m until 2026-08-31 -- roughly 28x
+the area of the thing being labelled. The call the interpreter makes is majority
+cover of the 10 m cell (see the brief in label_app.html), so a chart describing a
+60 m neighbourhood was answering a different question from the buttons: a hedge,
+a track or a field margin outside the cell moved the line that was supposed to
+justify the call. Worse, it was invisible -- two interpreters disagreeing because
+one weighted the surroundings is indistinguishable from two interpreters
+disagreeing about the legend, and the agreement number is what this campaign is
+bought on.
+
+The cell is the Sentinel-2 PIXEL the point falls in (`src/label_cell.py`), and
+the read below is that pixel exactly: `reduceRegion` over the point at scale 10
+returns the value of the pixel containing it, in the granule's own grid. The
+square the app draws is the same pixel, snapped in UTM. Until 2026-08-31 this
+was a 10 m square *centred on the point*, which straddles four pixels and is
+none of them -- so the chart mixed up to four pixels' reflectance to justify a
+call on one of them.
 
 Deliberately NOT the s2cloudless join the composites use: it made a first
 attempt take 103 s for 269 scenes, because the join materialises a pair per
@@ -48,8 +68,11 @@ scene. `MSK_CLDPRB` is the same s2cloudless product already carried as a band.
     # what it would do, without touching Earth Engine
     $G src/build_batch_dense.py --batch app/batches/b001.json --dry-run
 
-Re-runs are resumable: a point whose sidecar is on disk is skipped. `--force`
-re-bakes.
+Re-runs are resumable: a point whose sidecar is on disk **and was baked by the
+current recipe** is skipped. A `DENSE_BAKE_VERSION` bump re-bakes the whole
+directory on its own -- the app refuses to serve a sidecar it does not know the
+version of, so skipping them would strand the batch on the live path. `--force`
+re-bakes regardless.
 """
 from __future__ import annotations
 
@@ -62,13 +85,19 @@ from pathlib import Path
 
 #: Bumped when the recipe changes. MUST MATCH `DENSE_BAKE_VERSION` in
 #: label_app.html; an unknown version falls back to live Earth Engine.
-DENSE_BAKE_VERSION = "dense1"
+#: `dense3` is the Sentinel-2 pixel; `dense2` was a 10 m square centred on the
+#: point (four pixels, none of them the cell) and `dense1` a 30 m circle. The
+#: bump is what stops a stale sidecar being served against the new brief -- the
+#: app falls back to live Earth Engine on a version it does not know.
+DENSE_BAKE_VERSION = "dense3"
 
-#: MUST MATCH `denseFetchLive`. The buffer is a radius in metres.
+#: MUST MATCH `denseFetchLive`. `CELL_M` is the edge of the labelling cell and
+#: is here for the record: the read is `reduceRegion` over the POINT at
+#: `SCALE_M`, which is that cell without a geometry to get wrong.
 CLOUDY_MAX = 85
 CLDPRB_MAX = 40
-BUFFER_M = 30
-SCALE_M = 20
+CELL_M = 10
+SCALE_M = 10
 BANDS = ("B4", "B8", "B11", "B12")
 
 
@@ -84,7 +113,6 @@ def _ee():
 def series_for(ee, point: dict, years: list[int]) -> dict:
     """`denseFetchLive()` in Python. One request per point."""
     pt = ee.Geometry.Point([float(point["lon"]), float(point["lat"])])
-    at = pt.buffer(BUFFER_M)
     col = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
            .filterDate(ee.Date.fromYMD(years[0], 1, 1),
                        ee.Date.fromYMD(years[-1] + 1, 1, 1))
@@ -100,7 +128,7 @@ def series_for(ee, point: dict, years: list[int]) -> dict:
 
     fc = ee.FeatureCollection(col.map(mask).map(
         lambda im: ee.Feature(None, ee.Image(im)
-                              .reduceRegion(ee.Reducer.mean(), at, SCALE_M)
+                              .reduceRegion(ee.Reducer.mean(), pt, SCALE_M)
                               .set("t", ee.Image(im).date().millis()))
     )).filter(ee.Filter.notNull(["B8"]))
 
@@ -141,11 +169,21 @@ def bake(batch: dict, batch_path: Path, *, workers: int, force: bool,
 
     root = batch_path.parent / f"{batch['batch_id']}_dense"
     points = batch["points"]
-    todo = [p for p in points if force or not (root / f"{p['id']}.json").exists()]
+    # A sidecar on disk is only a skip if it was baked by THIS recipe. The
+    # batch's own `dense` block records which one, and a version bump means
+    # every file in the directory is answering the old brief -- which the app
+    # will refuse to serve, so a resumable re-run that skipped them all would
+    # leave the batch permanently on the live path and say "100 already there".
+    stale = (batch.get("dense") or {}).get("version") != DENSE_BAKE_VERSION
+    todo = [p for p in points
+            if force or stale or not (root / f"{p['id']}.json").exists()]
 
     print(f"{batch_path}")
     print(f"  {len(points)} points · {years[0]}-{years[-1]} · every clear "
-          f"observation in a {BUFFER_M} m circle")
+          f"observation in the labelled pixel ({CELL_M} m)")
+    if stale and not force:
+        print(f"  bake version is now {DENSE_BAKE_VERSION} (this batch says "
+              f"{(batch.get('dense') or {}).get('version')!r}) -- re-baking all")
     print(f"  -> {root}  ({len(todo)} to bake, "
           f"{len(points) - len(todo)} already there)")
     if dry_run:
@@ -186,7 +224,7 @@ def bake(batch: dict, batch_path: Path, *, workers: int, force: bool,
         "version": DENSE_BAKE_VERSION,
         "dir": f"{batch['batch_id']}_dense",
         "years": list(years),
-        "buffer_m": BUFFER_M,
+        "cell_m": CELL_M,
         "scale_m": SCALE_M,
         "cloudy_max": CLOUDY_MAX,
         "cldprb_max": CLDPRB_MAX,

@@ -67,7 +67,11 @@ the three channels so hue -- which the legend and the tips teach as a convention
     # what it would do, without touching Earth Engine
     $G src/build_batch_chips.py --batch app/batches/b001.json --dry-run
 
-Re-runs are **resumable**: a point whose sprite is already on disk is skipped,
+Re-runs are **resumable**: a point whose sprite is on disk **and was drawn by
+the current `CHIP_BAKE_VERSION`** is skipped — a version bump re-bakes the
+whole directory on its own, because the app refuses to serve sprites it does
+not know the version of and skipping them would strand the batch on the live
+path. Otherwise: a point whose sprite is already on disk is skipped,
 which matters because a hundred points is 10-60 minutes of Earth Engine and a
 revoked token halfway through should not mean starting again. `--force`
 re-bakes.
@@ -83,6 +87,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import label_cell
 from build_batch_evidence import growing_season
 
 #: Bumped when the recipe below changes. The app compares it with what it finds
@@ -92,7 +97,14 @@ from build_batch_evidence import growing_season
 #: chip1 -> chip2: the per-point stretch below. A chip1 sprite was rendered
 #: through the fixed bounds and would disagree with a chip2 tint, so the bump is
 #: not cosmetic -- an un-rebaked batch must fall back rather than mix the two.
-CHIP_BAKE_VERSION = "chip2"
+#:
+#: chip2 -> chip3: the marks. A chip2 sprite carries one red ring at
+#: `max(width_m * 0.02, 6)` m, which is 6x the area of the cell being called and
+#: changes size with the width slider; chip3 carries the labelling cell itself
+#: (`src/label_cell.py`) with the ring demoted to a white locator. The app draws
+#: that same cell on the map, so a chip2 sprite next to a chip3 map shows the
+#: interpreter two different footprints for one call.
+CHIP_BAKE_VERSION = "chip3"
 
 #: MUST MATCH `CHIP_SCENE_CAP` in label_app.html. The cap is the measured
 #: difference between a 34 s filmstrip and a 5 s one (§AL9), and it costs a
@@ -182,7 +194,13 @@ def composite(ee, lat: float, year: int, box, cap: int = SCENE_CAP):
     col = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
            .filterDate(start, end).filterBounds(box))
     if cap:
-        col = col.sort("CLOUDY_PIXEL_PERCENTAGE").limit(cap)
+        # `distinct` before `limit`, or the cap counts GRANULES. MGRS tiles
+        # overlap by ~10 km and orbits overlap heavily at high latitude, so a
+        # point in an overlap spends two of its twelve slots on one overpass
+        # and the median is built from half the dates it looks like. Sorted
+        # first, so what survives each date is that date's clearest granule.
+        col = (col.sort("CLOUDY_PIXEL_PERCENTAGE")
+               .distinct("DATATAKE_IDENTIFIER").limit(cap))
     clouds = (ee.ImageCollection("COPERNICUS/S2_CLOUD_PROBABILITY")
               .filterDate(start, end).filterBounds(box))
     joined = ee.Join.saveFirst("c").apply(col, clouds, ee.Filter.equals(
@@ -312,14 +330,24 @@ def sprite_url(ee, point: dict, years: list[int], combo: str, width_m: float,
     lon = float(point["lon"])
     bands, vmin, vmax = combo_bounds(combo, stretch)
 
-    # The red pixel ring, painted into every cell. Without it a 10 m chip of an
-    # agricultural landscape is unlocatable -- the interpreter cannot tell which
-    # of nine fields the point is in -- which makes the chip worse than nothing.
-    marker = (ee.Image().byte()
-              .paint(ee.Geometry.Point([lon, lat]).buffer(max(width_m * 0.02, 6)),
-                     1, 2)
-              .visualize(palette=["ff2d2d"], min=0, max=1))
-    marker = marker.updateMask(marker.select(0).gt(0))
+    # TWO marks, and they say different things. The RED SQUARE is the labelling
+    # cell -- the actual Sentinel-2 pixel, `src/label_cell.py` -- so what the
+    # interpreter judges on the map is outlined on the picture as well. The
+    # WHITE RING is a locator and nothing more: its radius is a fixed fraction
+    # of the chip width, which is a fixed ~7 screen pixels at every width, and
+    # it names no ground area at all.
+    #
+    # It used to be one red ring at `max(width_m * 0.02, 6)` metres, which at
+    # the default 640 m width is a 12.8 m radius against a 5 m cell -- so the
+    # only footprint drawn on the imagery was 6x the area of the thing being
+    # called, and it changed size when the width slider moved. `chipUrl` in
+    # label_app.html paints the same two marks for the live path.
+    paint = (ee.Image().byte()
+             .paint(ee.Geometry.Point([lon, lat]).buffer(max(width_m * 0.02, 6)),
+                    1, 1)
+             .paint(label_cell.cell_geometry(ee, lon, lat), 2, 1))
+    marker = (paint.visualize(palette=["ffffff", "ff2d2d"], min=1, max=2)
+              .updateMask(paint.gt(0)))
 
     cells = []
     for i, year in enumerate(years):
@@ -405,7 +433,7 @@ def stretches(ee, batch: dict, points: list[dict], years: list[int],
 def bake(batch: dict, batch_path: Path, *, combo: str, width_m: float,
          cell: int, fmt: str, quality: int, workers: int, force: bool,
          dry_run: bool, stretch_mode: str = "point",
-         force_stretch: bool = False) -> dict:
+         force_stretch: bool = False, stale: bool | None = None) -> dict:
     schema = batch.get("evidence_schema") or {}
     years = ((schema.get("timeline") or {}).get("years")) or []
     if not years:
@@ -418,13 +446,29 @@ def bake(batch: dict, batch_path: Path, *, combo: str, width_m: float,
 
     root = batch_path.parent / f"{batch['batch_id']}_chips" / slug(combo)
     points = batch["points"]
+    # PASSED IN, not re-derived. `main()` bakes the schemes in one process and
+    # carries the batch between them so the second reads the first's cached
+    # ramp -- which means by the time scheme two asks, `batch["chips"]` already
+    # says the new version and every remaining scheme reads as up to date. The
+    # first scheme re-bakes, the other three keep their old marks, and the batch
+    # ships stamped with a version three quarters of its sprites are not: the
+    # app serves them, because the stamp is all it can check. Caught on the
+    # chip2 -> chip3 re-bake of b001, three schemes deep.
+    if stale is None:
+        stale = (batch.get("chips") or {}).get("version") != CHIP_BAKE_VERSION
     todo = [p for p in points
-            if force or not (root / f"{p['id']}.{fmt}").exists()]
+            # Same rule as build_batch_dense.py: a sprite on disk is a skip
+            # only if this recipe drew it. A CHIP_BAKE_VERSION bump means every
+            # sprite in the directory carries the old marks.
+            if force or stale or not (root / f"{p['id']}.{fmt}").exists()]
 
     print(f"{batch_path}")
     print(f"  {len(points)} points x {len(years)} years "
           f"({years[0]}-{years[-1]}) · {combo} · {width_m:g} m · {cell} px "
           f"cells · cap {SCENE_CAP}")
+    if stale and not force:
+        print(f"  bake version is now {CHIP_BAKE_VERSION} (this batch says "
+              f"{(batch.get('chips') or {}).get('version')!r}) -- re-baking all")
     print(f"  -> {root}  ({len(todo)} to bake, "
           f"{len(points) - len(todo)} already there)")
     if dry_run:
@@ -529,6 +573,9 @@ def main() -> None:
     args = parser.parse_args()
 
     batch = json.loads(args.batch.read_text())
+    # Read the version ONCE, off the batch as it was on disk. Every scheme in
+    # this run is stale or none of them are -- see the note in `bake`.
+    stale = (batch.get("chips") or {}).get("version") != CHIP_BAKE_VERSION
     meta = None
     for i, combo in enumerate(args.combo):
         # Sequential, and the batch is carried between iterations so the second
@@ -537,7 +584,8 @@ def main() -> None:
                     cell=args.cell, fmt=args.format, quality=args.quality,
                     workers=args.workers, force=args.force,
                     dry_run=args.dry_run, stretch_mode=args.stretch,
-                    force_stretch=args.force_stretch and i == 0)
+                    force_stretch=args.force_stretch and i == 0,
+                    stale=stale)
         if meta:
             batch["chips"] = meta
     if not meta:

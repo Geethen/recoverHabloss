@@ -104,6 +104,52 @@ jobs:
           done
           exit $fail
 
+      # A directory that EXISTS is not a bake that is served. The app pins a
+      # version for each sidecar kind and falls back to live Earth Engine on
+      # anything else, so a batch left at the previous version deploys clean,
+      # looks deployed, and is the same flat-swatches failure as no bake at all
+      # -- one level further down. This is what shipped `ev1`/ESRI-2023 against
+      # an `ev2` builder (AL11.7) and what a `chip2` bake would do against the
+      # `chip3` marks (AL12.1).
+      - name: Check the bakes are the version the app reads
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          from pathlib import Path
+
+          def const(path, name, pattern):
+              m = re.search(pattern % re.escape(name), Path(path).read_text(), re.M)
+              assert m, f"{name} not found in {path}"
+              return m.group(1)
+
+          PY_CONST = r'^%s = "([^"]+)"'
+          JS_CONST = r"^const %s = '([^']+)'"
+          want = {}
+          for kind, src, name in (
+                  ("chips", "src/build_batch_chips.py", "CHIP_BAKE_VERSION"),
+                  ("dense", "src/build_batch_dense.py", "DENSE_BAKE_VERSION")):
+              builder = const(src, name, PY_CONST)
+              app = const("app/label_app.html", name, JS_CONST)
+              if builder != app:
+                  print(f"::error::{name} is {builder!r} in {src} and {app!r} in "
+                        f"the app -- every bake would fall back")
+                  sys.exit(1)
+              want[kind] = builder
+
+          fail = 0
+          for batch in sorted(Path("app/batches").glob("*.json")):
+              if batch.name == "index.json":
+                  continue
+              declared = json.loads(batch.read_text())
+              for kind, version in want.items():
+                  got = (declared.get(kind) or {}).get("version")
+                  if got is not None and got != version:
+                      print(f"::error::{batch} declares {kind} {got!r} but the app "
+                            f"reads {version!r} -- re-run the builder for it")
+                      fail = 1
+          sys.exit(fail)
+          PY
+
       - name: Upload app artifact
         uses: actions/upload-pages-artifact@v3
         with:

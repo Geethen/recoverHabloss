@@ -91,25 +91,35 @@ move ±5% between seed blocks. Quote paper numbers from a replicated run.
 - pandas is 3.x: parquet round-trips floats as nullable extension dtypes that
   reach sklearn as object arrays. Cast with `.astype("float64")` before fitting.
 
-## The labelling deployment — blank in the repo is CORRECT
+## The labelling deployment — the split is what a browser can see
 
 `app/apps_script/Code.gs` and `app/config.js` are **source, not the running
 deployment**, and reading them to decide whether the campaign is configured is
 the mistake this section exists to stop. The script that answers `/exec` is a
-*copy* pasted into the Sheet's Apps Script editor, and the live values are not
-in this repository and must not be:
+*copy* pasted into the Sheet's Apps Script editor. What may be committed is
+decided by one test — **does every browser that opens the app already have it?**
 
-- `var SUBMIT_TOKEN = ''` in `Code.gs` is the correct committed state; the
-  deployed copy carries the real string. The repo is public.
-- the Earth Engine **service-account key** lives in that script's *Project
-  Settings ▸ Script Properties* as `EE_SERVICE_ACCOUNT_KEY`. It is never in git
-  and cannot be in the page — the SDK refuses a browser-side private key.
-- the `/exec` URL, submit token and expert roster reach the app from
-  `app/config.js` locally and from the `LABEL_APP_CONFIG_JS` Actions secret on
-  Pages, which `.github/workflows/pages.yml` injects at build time.
+- **committed, and correctly so** (2026-09-04, the user's call): the `/exec`
+  URL, the submit token and the expert roster, in `app/config.js`. The page
+  downloads that file, so anyone who can open the app has all three; keeping
+  them out of a public repo hid them from nobody and cost a dragged-in copy of
+  `app/` that did not work. Neither is a credential: `/exec` has only the powers
+  `Code.gs` grants it (append a row, read this campaign's rows, mint a one-hour
+  read-only EE token), and the token is **anti-spam, not authentication** — it
+  stops junk rows from whoever finds the URL and draws no line between experts.
+  Rotate it in Script Properties and in `config.js` together.
+- **never committed**: the Earth Engine **service-account key**, in that
+  script's *Project Settings ▸ Script Properties* as `EE_SERVICE_ACCOUNT_KEY`.
+  It is never in git and cannot be in the page — the SDK refuses a browser-side
+  private key, which is the whole reason the token broker exists.
+- Pages still overwrites `config.js` from the `LABEL_APP_CONFIG_JS` Actions
+  secret at build time (`.github/workflows/pages.yml`), and a missing secret
+  still fails the build. So the committed file governs a local serve and a
+  dragged-in copy; the secret governs the published app, and **the two must be
+  kept in step by hand.**
 
-**So a blank token or a missing key in these files says nothing about the
-deployment. Ask the deployment, which is the only thing that can answer:**
+**So the file says what the source says, not what is deployed. Ask the
+deployment, which is the only thing that can answer:**
 
 ```bash
 curl '<exec-url>?action=ping'     # -> "token_required":…, "ee_service_account":…
@@ -223,6 +233,12 @@ supervision, guided filtering, dot/normalised-difference features).
   builder or the filmstrip and the chart are two different seasons. **Every
   dataset in the UI shows its end year** — that rule is what caught Hansen
   `v1_11` (`lossyear` stops at 23) answering a question about 2024.
+  §AL12 also: the chip scene cap counted **granules**, so a point in a tile or
+  orbit overlap spent two of its twelve slots on one overpass —
+  `distinct('DATATAKE_IDENTIFIER')` between the sort and the limit, both sides.
+  And the view is addressable: `?point=&scheme=&w=` opens a colleague on the
+  same point under the same stretch, rewritten by `goTo`/`applyChipVis`, with
+  `expert` never added — that id is the other reader's.
   Two Earth Engine facts the builder cost three failed runs to learn:
   **EE evaluates in tiles**, so spatially clustered points batch and
   widely-spread ones must be mapped over independently — this draw is global, so
@@ -307,6 +323,55 @@ supervision, guided filtering, dot/normalised-difference features).
   Note when debugging that `dwbuilt`/`obtemporal` are **masked differences** — a
   transparent result is the correct answer at a stable point; use `dw18`/`dw24`
   to test whether overlays work at all.
+  **§AL11 is the pre-pilot pass (2026-08-31), and one item in it changes what a
+  label MEANS.** The unit is **majority cover of one Sentinel-2 10 m pixel** —
+  the rule the original sampling used. The brief said the opposite ("judge the
+  point, not the whole square") and *nothing drew a footprint*: the marker was a
+  2.6 px dot in screen pixels, identical at every zoom. **§AL12 then fixed the
+  geometry**: a 10 m square *centred on the point* is not a pixel of anything —
+  it straddles four and covers none — so the definition is now the **snapped
+  pixel**, `src/label_cell.py` (UTM of the MGRS zone, floored to a multiple of
+  10 m; the 32V and Svalbard exceptions matter, the study area is Norway).
+  That grid is not a choice: the deployed raster is written on it
+  (EPSG:32632, 10 m, origin an exact multiple of 10). `s2Cell()` in the app is
+  the same definition in JS, checked against Python in node by
+  `tests/test_label_cell.py`; a batch bakes its cells (`cell`, and
+  `parseBatch`/`normalisePoints` are allow-lists) and the baked one wins.
+  Everything that reads the cell must move together — map layer, brief, chip
+  marker, and the dense series, which is now `reduceRegion` over the **point**
+  at scale 10 (the containing pixel, no geometry to get wrong; bake
+  **`dense2` → `dense3`**). The chip's red ring was `max(width_m*0.02, 6)` m —
+  6× the cell's area and it moved with the width slider; it is now a white
+  locator with the red cell painted inside. The centre **dot is gone**: it said
+  "judge this point" in the only language a map has. **b001's bakes predate all
+  of this and must be re-run.** **Confidence (1/2/3) is now required** to save
+  a real call — those keys were always bound and merely untaught — but not on the
+  `uninterpretable` path. Four silent losses closed: dropping an **export** back
+  in ran `adoptBatch` and replaced the batch's points with only the labelled ones
+  (it now restores, branching on content); the outbox dropped acks **by key**, so
+  a correction made mid-flight was deleted and marked synced (`add()` replaces
+  the object, so identity *is* the revision check — no wire protocol needed);
+  progress divided by `S.points.length` rather than the expert's own workload;
+  and "second readings" claimed another expert had already called the point,
+  which nothing knows. Also: the map's ⓘ did nothing because the app's
+  **`details > summary`** element selector was restyling MapLibre's compact
+  attribution control; chart dots are now the colour that year's **chip cell**
+  is (reversing AL10 — see AL11.5 for why); EOX **Sentinel-2 cloudless 2018 and
+  2024** are basemaps, being the model's own sensor and pixel at exactly the two
+  years called; Carto Positron removed. **b001 was re-baked onto `dense3` and
+  `chip3` on 2026-09-04** and the deploy workflow now checks the bake *version*
+  against the constant the app reads, not just that the directory exists — the
+  gap that shipped `ev1`/ESRI-2023 against an `ev2`/ESRI-2025 builder. That
+  re-bake also found a bug worth knowing: `build_batch_chips.py` bakes the four
+  schemes in one process and carries the batch between them for the cached
+  ramp, so **scheme one's meta stamped the new version and schemes two to four
+  read their own old sprites as current** — a batch stamped `chip3` with three
+  quarters of its pixels drawn by `chip2`, which the app cannot detect because
+  the stamp is all it can check. `main()` now reads staleness once, before the
+  loop, and `tests/test_chip_ramp.py` holds it — with Earth Engine stubbed,
+  because `--dry-run` returns before the stamp is carried and cannot see it.
+  **Still open**: index filmstrips are offered in the scheme picker but not
+  baked, so NDVI/NDMI/NBR drop all nine years to live EE.
 - The two stable-class map errors — mountains read as `Artificial -> Artificial`,
   wetlands as `Cropland -> Cropland` — are diagnosed in `ACTIVE_LEARNING.md`
   §AL-T. **The mountain one is a bare-ground error, not a slope error**: the

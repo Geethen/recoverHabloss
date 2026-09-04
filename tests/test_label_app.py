@@ -37,6 +37,7 @@ import http.server
 import json
 import re
 import socketserver
+import sys
 import threading
 from pathlib import Path
 
@@ -346,9 +347,19 @@ def open_app(browser, base, who=None, fresh=True, batch="/batch.json",
     return page, ctx
 
 
-def label_here(page, first="a", second="z"):
+def label_here(page, first="a", second="z", conf="2"):
+    """Make a complete call and save it.
+
+    `conf` is not optional decoration: confidence became REQUIRED to save on
+    2026-08-31 (see `saveable()`), so a helper that pressed only the two class
+    keys would leave Save disabled and every test built on it would assert
+    against a point that was never written. Pass `conf=None` to make a
+    deliberately incomplete call.
+    """
     page.keyboard.press(first)
     page.keyboard.press(second)
+    if conf:
+        page.keyboard.press(conf)
     page.keyboard.press("Enter")
     page.wait_for_timeout(200)
 
@@ -624,6 +635,7 @@ def test_saving_without_an_identity_is_refused(browser, server):
         assert page.is_visible("#intro-go")
         page.keyboard.press("a")
         page.keyboard.press("z")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(400)
         assert page.evaluate("Object.keys(S.labels).length") == 0
@@ -650,6 +662,7 @@ def test_saving_without_an_identity_is_refused(browser, server):
             timeout=15000)
         press_until(page, "a", "#ch-2018 .on")
         press_until(page, "z", "#ch-2024 .on")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_function("Object.keys(S.labels).length === 1", timeout=15000)
         rec = page.evaluate("Object.values(S.labels)[0]")
@@ -678,6 +691,7 @@ def test_change_year_is_offered_only_where_there_is_change(browser, server):
         assert page.evaluate(shown) != "none"
 
         page.click("#years button[data-year='2021']")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(300)
         assert page.evaluate("Object.values(S.labels)[0].change_year") == "2021"
@@ -696,6 +710,7 @@ def test_a_year_answered_then_made_irrelevant_is_dropped(browser, server):
         page.keyboard.press("z")                 # back to Nature -> Nature
         page.wait_for_timeout(200)
         assert page.evaluate("cur.year") is None
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(300)
         assert page.evaluate("Object.values(S.labels)[0].change_year") == ""
@@ -710,11 +725,12 @@ def test_transient_change_opens_the_year_on_a_stable_call(browser, server):
     try:
         page.keyboard.press("a")
         page.keyboard.press("z")                 # stable
-        page.keyboard.press("t")                 # change seen, ends match
+        page.keyboard.press("t")                 # change seen, endpoints match
         page.wait_for_timeout(150)
         assert page.evaluate(
             "getComputedStyle(document.getElementById('sec-year')).display") != "none"
         page.click("#years button[data-year='2020']")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(300)
         rec = page.evaluate("Object.values(S.labels)[0]")
@@ -735,10 +751,12 @@ def test_the_reference_answer_is_never_shown_before_the_call(browser, server):
     try:
         assert page.evaluate("S.batch.calibration") is True
         assert page.evaluate("S.points[0].reference") == "Nature -> Cropland"
-        # ...and none of it reaches the panel before an answer is given
-        panel = page.text_content("#panel-scroll")
-        assert "Cropland" not in panel.replace("Cropland</", "").replace(
-            "Cropland\n", "") or "reference" not in panel.lower()
+        # ...and none of the sample's reference answer reaches the panel before
+        # an answer is given. The legend itself legitimately uses both class
+        # names and the phrase "scale reference", so test the feedback channel
+        # and the exact transition rather than those generic words.
+        assert "Nature -> Cropland" not in page.text_content("#panel")
+        assert page.text_content("#cal-feedback").strip() == ""
         assert "reference" not in page.text_content("#meta-table").lower()
         assert page.evaluate(
             "getComputedStyle(document.getElementById('cal-feedback')).display"
@@ -754,6 +772,7 @@ def test_calibration_tells_you_after_each_call_and_scores_at_the_end(browser, se
         # k000's reference is Nature -> Cropland; answer Nature -> Nature (wrong)
         page.keyboard.press("a")
         page.keyboard.press("z")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(400)
         note = page.text_content("#cal-feedback")
@@ -764,6 +783,7 @@ def test_calibration_tells_you_after_each_call_and_scores_at_the_end(browser, se
         # k001's reference is Nature -> Cropland; answer it correctly
         page.keyboard.press("a")
         page.keyboard.press("x")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(400)
         assert page.evaluate(
@@ -773,6 +793,7 @@ def test_calibration_tells_you_after_each_call_and_scores_at_the_end(browser, se
         for _ in range(2):
             page.keyboard.press("a")
             page.keyboard.press("z")
+            page.keyboard.press("2")   # confidence: required to save
             page.keyboard.press("Enter")
             page.wait_for_timeout(400)
         score = page.evaluate("calibrationScore()")
@@ -811,6 +832,10 @@ def test_a_tabbed_button_gets_its_own_enter(browser, server):
     try:
         page.keyboard.press("a")
         page.keyboard.press("c")
+        # Confidence too, so the call is SAVEABLE. Without it Enter is refused
+        # by `saveable()` and this test would pass whether or not the focus
+        # logic works -- which is the whole thing it exists to check.
+        page.keyboard.press("2")
         page.wait_for_timeout(150)
         # Tab is what arms the modality, and it is also how a keyboard user got
         # here. Focus is then put where the assertion needs it.
@@ -833,6 +858,7 @@ def test_a_clicked_button_does_not_keep_the_next_enter(browser, server):
         page.keyboard.press("a")
         page.keyboard.press("c")
         page.click("#years button[data-year='2021']")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(300)
         assert page.evaluate("Object.keys(S.labels).length") == 1
@@ -921,6 +947,7 @@ def test_every_dialog_action_is_wired(browser, server):
         for _ in range(6):
             page.keyboard.press("a")
             page.keyboard.press("z")
+            page.keyboard.press("2")   # confidence: required to save
             page.keyboard.press("Enter")
             page.wait_for_timeout(200)
         page.wait_for_timeout(400)
@@ -981,13 +1008,17 @@ def test_the_whole_call_is_pinned_and_only_the_evidence_scrolls(browser, server)
             assert page.evaluate(f"{scroll}.contains(document.getElementById('{el}'))"), el
         # the foot band is gone rather than merely emptied
         assert page.evaluate("document.getElementById('panel-foot')") is None
-        assert page.evaluate(
-            "[...document.querySelectorAll('#flags-call .flag')]"
-            ".map(b => b.dataset.flag)") == ["unsure", "interesting"]
+        # `unsure` and `flag for review` were pinned beside Save in their own
+        # `flags-call` group; they now sit with the other four (AL11.3), because
+        # six flags in two places is two lists to learn. The container and its
+        # `:empty` rule stay -- what changed is that nothing is assigned to it.
         assert page.evaluate(
             "[...document.querySelectorAll('#flags .flag')]"
             ".map(b => b.dataset.flag)") == [
-                "uninterpretable", "mixed", "imagery_gap", "transient_change"]
+                "unsure", "uninterpretable", "mixed", "imagery_gap",
+                "transient_change", "interesting"]
+        assert page.evaluate(
+            "document.querySelectorAll('#flags-call .flag').length") == 0
         # Save is reachable without scrolling anything: it is a flex child of
         # the head, below the head's own scroller.
         assert page.evaluate(
@@ -1000,9 +1031,12 @@ def test_the_whole_call_is_pinned_and_only_the_evidence_scrolls(browser, server)
         page.wait_for_timeout(200)
         assert page.evaluate("[...cur.flags].sort()") == ["interesting", "unsure"]
         assert page.evaluate(
-            "document.querySelector('#flags-call [data-flag=unsure]')"
+            "document.querySelector('#flags [data-flag=unsure]')"
             ".getAttribute('aria-pressed')") == "true"
-        page.click("#flags-call [data-flag=interesting]")
+        assert page.evaluate(
+            "document.querySelector('#flags [data-flag=interesting]')"
+            ".getAttribute('aria-pressed')") == "true"
+        page.click("#flags [data-flag=interesting]")
         page.wait_for_timeout(150)
         assert page.evaluate("[...cur.flags]") == ["unsure"]
     finally:
@@ -1104,36 +1138,88 @@ def test_the_inspector_reading_does_not_survive_onto_the_next_point(
         ctx.close()
 
 
-def test_chart_dots_are_coloured_by_the_series_not_the_chip_scheme(browser, server):
-    """A dot's colour and its height should be the same number said twice.
+def test_chart_dots_rise_monotonically_with_the_plotted_index(browser, server):
+    """Higher NDVI is greener. Always, at every point, under every chip scheme.
 
-    They followed `chipVis.combo`, so plotting NDVI over a SWIR/NIR/GREEN
-    filmstrip painted them from three bands with nothing to do with the curve
-    drawn through them -- and switching series left them unchanged, which is the
-    tell.
+    Settled three times. AL10 painted the dot on the plotted index's ramp;
+    AL11.5 switched it to the chip's false colour so a dot could be matched to
+    its filmstrip cell; AL11.8 switched back, with a measurement: over the 99
+    stretched points of b001 under SWIR1/NIR/GREEN, NDVI and perceived greenness
+    correlate positively at 84 and NEGATIVELY at 15 -- red is SWIR1 there, so
+    dry-but-vegetated ground renders brown at a high NDVI. A colour scale that
+    reverses at 15% of points is not a scale.
+
+    So this asserts the PROPERTY, not the mechanism: sort the dots by their
+    plotted value and the ramp position must not go backwards. A future change
+    that re-links the dot to the chip will fail here, which is the point.
+
+    Read from `getComputedStyle`, never `getAttribute('fill')`: in SVG a CSS
+    property beats a presentation attribute, and an earlier version of this test
+    passed for weeks while every dot on screen was accent blue (AL11.6b).
     """
     base, _ = server
     page, ctx = open_app(browser, base, who="e1", batch="/batches/b001.json")
     try:
         page.wait_for_timeout(1200)
-        fills = lambda: page.evaluate(
-            "[...document.querySelectorAll('#ev-chart .ev-dot')]"
-            ".map(d => d.getAttribute('fill'))")
-        ndvi = fills()
-        assert len(ndvi) >= 5 and all(f for f in ndvi), ndvi
+        # (value, ramp position) per dot, straight from the app's own ramp
+        rows = lambda: page.evaluate("""(() => {
+          const p = S.points[S.i], t = p.evidence.t, yrs = evYears();
+          const spec = chipSpec(indexComboForSeries(evSeries));
+          return [...document.querySelectorAll('#ev-chart .ev-dot')].map(d => {
+            const yr = Number(d.dataset.year), i = yrs.indexOf(yr);
+            const v = t[evSeries][i];
+            return {v: v, fill: getComputedStyle(d).fill,
+                    want: evVisColor(p, t, i, indexComboForSeries(evSeries))};
+          }).filter(r => r.v !== null);
+        })()""")
+
+        def hexify(css):
+            m = re.match(r"rgb\((\d+), ?(\d+), ?(\d+)\)", css)
+            return "#" + "".join(f"{int(g):02x}" for g in m.groups()) if m else css
+
+        for scheme in ("SWIR1/NIR/GREEN", "NDVI", "RED/GREEN/BLUE"):
+            page.evaluate("s => { chipVis.combo = s; applyChipVis(); }", scheme)
+            page.wait_for_timeout(400)
+            got = rows()
+            assert len(got) >= 5, got
+            # the dot is the ramp colour for its own value...
+            for r in got:
+                assert hexify(r["fill"]) == r["want"], (scheme, r)
+            # ...and the ramp is monotonic in the plotted value: sorting by the
+            # value must sort the colours along the ramp, not scramble them.
+            # "Higher NDVI is greener" is asserted as TWO facts that compose,
+            # not as a per-point greenness test. A bare point whose nine years
+            # all sit near NDVI 0.1 is legitimately brown throughout -- inside
+            # that first ramp segment red rises faster than green, so a
+            # G-minus-R measure calls a correct ramp inverted. p0005 and p0010
+            # in b001 are exactly that shape, and an earlier draft of this test
+            # would have failed on both.
+            #
+            # Fact 1, above: every dot is `rampColor` evaluated at its OWN
+            # value. Fact 2, below: the ramp runs brown -> green. Together they
+            # give monotonicity for free, at every point, without a colour
+            # heuristic that has to be right about perception.
+
+        # Fact 2: the ramp itself runs brown -> green, so a larger value is a
+        # greener dot by construction. Checked on the constant, once.
+        lo, hi = (page.evaluate(f"rampColor(INDEX_RAMP, {t})") for t in (0, 1))
+        gr = lambda h: int(h[3:5], 16) - int(h[1:3], 16)
+        assert gr(lo) < 0 < gr(hi), (
+            f"INDEX_RAMP runs the wrong way: t=0 is {lo}, t=1 is {hi}")
+
+        # the CHIP SCHEME must no longer move the dots: they follow the SERIES
+        page.evaluate("chipVis.combo = 'SWIR1/NIR/GREEN'; applyChipVis()")
+        page.wait_for_timeout(400)
+        a = [r["fill"] for r in rows()]
+        page.evaluate("chipVis.combo = 'RED/GREEN/BLUE'; applyChipVis()")
+        page.wait_for_timeout(400)
+        assert [r["fill"] for r in rows()] == a, \
+            "changing the chip scheme moved the dots -- they must follow the series"
+
+        # ...but changing the PLOTTED SERIES must
         page.click("#ev-series button[data-series='nbr']")
         page.wait_for_timeout(400)
-        nbr = fills()
-        assert nbr != ndvi, "switching the plotted series did not recolour the dots"
-
-        # and the chip STRIP still follows the chip scheme -- they are two
-        # questions and this is the one that was conflated
-        page.click("#ev-series button[data-series='ndvi']")
-        page.wait_for_timeout(300)
-        assert page.evaluate(
-            "evVisColor(S.points[0], S.points[0].evidence.t, 0)"
-        ) == page.evaluate(
-            "evVisColor(S.points[0], S.points[0].evidence.t, 0, chipVis.combo)")
+        assert [r["fill"] for r in rows()] != a
     finally:
         ctx.close()
 
@@ -1232,6 +1318,63 @@ def test_the_control_stack_does_not_swallow_the_map(browser, server):
         ctx.close()
 
 
+def test_the_map_info_control_sits_clear_of_the_labelling_panel(browser, server):
+    """The floating panel used to cover MapLibre's bottom-right info button."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="kim")
+    try:
+        page.set_viewport_size({"width": 1366, "height": 768})
+        page.wait_for_timeout(200)
+        position = page.evaluate("""() => {
+          // This stand-in makes the test independent of WebGL and the MapLibre
+          // CDN while exercising the exact class used by the real control.
+          const info = document.createElement('div');
+          info.className = 'maplibregl-ctrl-bottom-right';
+          info.style.position = 'absolute';
+          info.style.width = '32px';
+          info.style.height = '32px';
+          document.getElementById('map').appendChild(info);
+          const ir = info.getBoundingClientRect();
+          const pr = document.getElementById('panel').getBoundingClientRect();
+          return {infoLeft: ir.left, infoRight: ir.right, panelLeft: pr.left,
+                  infoBottom: ir.bottom, viewportWidth: innerWidth,
+                  viewportHeight: innerHeight};
+        }""")
+        assert position["infoLeft"] >= 0, position
+        assert position["infoRight"] <= position["panelLeft"] - 4, position
+        assert position["infoBottom"] <= position["viewportHeight"], position
+    finally:
+        ctx.close()
+
+
+def test_the_evidence_scrollbar_stops_above_the_panel_edge(browser, server):
+    """The chart scroller must not disappear into the rounded panel bottom."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="kim")
+    try:
+        page.set_viewport_size({"width": 1366, "height": 768})
+        page.wait_for_timeout(200)
+        measure = page.evaluate("""() => {
+          const scroller = document.getElementById('panel-scroll');
+          const filler = document.createElement('div');
+          filler.style.height = '1200px';
+          scroller.appendChild(filler);
+          const sr = scroller.getBoundingClientRect();
+          const pr = document.getElementById('panel').getBoundingClientRect();
+          const css = getComputedStyle(scroller);
+          return {bottomClearance: pr.bottom - sr.bottom,
+                  scrolls: scroller.scrollHeight > scroller.clientHeight,
+                  gutter: css.scrollbarGutter,
+                  marginBottom: css.marginBottom};
+        }""")
+        assert measure["scrolls"], measure
+        assert measure["bottomClearance"] >= 10, measure
+        assert "stable" in measure["gutter"], measure
+        assert measure["marginBottom"] == "12px", measure
+    finally:
+        ctx.close()
+
+
 def test_the_swipe_knob_does_not_sit_on_the_point(browser, server):
     """The point is dead centre; a knob parked there hides the only marker.
 
@@ -1269,6 +1412,7 @@ def test_backspace_walks_back_to_the_point_you_just_left(browser, server):
         first = page.text_content("#pt-id")
         page.keyboard.press("a")
         page.keyboard.press("z")
+        page.keyboard.press("2")   # confidence: required to save
         page.keyboard.press("Enter")
         page.wait_for_timeout(300)
         assert page.text_content("#pt-id") != first
@@ -1293,9 +1437,11 @@ def test_the_batch_shape_is_not_shown_while_the_batch_is_being_made(browser, ser
     page, ctx = open_app(browser, base, who="moe")
     try:
         page.keyboard.press("a"); page.keyboard.press("c")   # change
-        page.keyboard.press("Enter"); page.wait_for_timeout(250)
+        page.keyboard.press("2"); page.keyboard.press("Enter")
+        page.wait_for_timeout(250)
         page.keyboard.press("a"); page.keyboard.press("z")   # stable
-        page.keyboard.press("Enter"); page.wait_for_timeout(250)
+        page.keyboard.press("2"); page.keyboard.press("Enter")
+        page.wait_for_timeout(250)
         page.keyboard.press("k")                              # unusable
         page.click("#uninterp-reasons button[data-reason='cloud']")
         page.keyboard.press("Enter"); page.wait_for_timeout(250)
@@ -1316,6 +1462,12 @@ def test_the_first_run_overlay_captures_an_identity(browser, server):
                                    "{experts:[{id:'e1',name:'Nils'}]};")
     try:
         page.wait_for_selector("#intro-go", timeout=10000)
+        guidance = page.text_content("#loading").lower()
+        assert "yellow 10 m label square" in guidance
+        assert "majority cover" in guidance
+        assert "do not classify the centre coordinate" in guidance
+        assert "white 100 m square" in guidance and "scale" in guidance
+        assert "dashed 5 km sampling square" in guidance and "context" in guidance
         # it will not let you past without one
         page.click("#intro-go")
         page.wait_for_timeout(200)
@@ -1867,6 +2019,7 @@ def test_two_experts_on_one_point_produce_two_rows(browser, server):
     try:
         first.keyboard.press("a")
         first.keyboard.press("c")            # Nature -> Artificial
+        first.keyboard.press("2")
         first.keyboard.press("Enter")
         first.wait_for_function("Outbox.size() === 0", timeout=20000)
     finally:
@@ -1880,6 +2033,7 @@ def test_two_experts_on_one_point_produce_two_rows(browser, server):
         second.wait_for_timeout(200)
         second.keyboard.press("a")
         second.keyboard.press("z")           # Nature -> Nature
+        second.keyboard.press("2")
         second.keyboard.press("Enter")
         second.wait_for_function("Outbox.size() === 0", timeout=20000)
 
@@ -1893,6 +2047,10 @@ def test_two_experts_on_one_point_produce_two_rows(browser, server):
         second.evaluate("goTo(0)")
         second.wait_for_timeout(200)
         second.keyboard.press("x")           # -> Cropland
+        # 3, not 2: the reopened point already carries the confidence it was
+        # saved with, and `setConf` TOGGLES -- pressing the same key again
+        # clears it, and `saveable()` then refuses the correction.
+        second.keyboard.press("3")
         second.keyboard.press("Enter")
         second.wait_for_function("Outbox.size() === 0", timeout=20000)
         rows = sheet.rows_for("two000")
@@ -1923,6 +2081,7 @@ def test_each_expert_gets_their_own_local_workspace(browser, server):
     try:
         page.keyboard.press("a")
         page.keyboard.press("c")
+        page.keyboard.press("2")
         page.keyboard.press("Enter")
         page.wait_for_timeout(300)
         assert page.evaluate("Object.keys(S.labels).length") == 1
@@ -2057,6 +2216,7 @@ def test_a_batch_is_not_complete_while_a_point_is_deferred(browser, server):
         for _ in range(5):
             page.keyboard.press("a")
             page.keyboard.press("z")
+            page.keyboard.press("2")
             page.keyboard.press("Enter")
             page.wait_for_timeout(250)
         page.wait_for_timeout(500)
@@ -2075,6 +2235,162 @@ def test_a_batch_is_not_complete_while_a_point_is_deferred(browser, server):
 # ---------------------------------------------------------------------------
 # 8. blinding
 # ---------------------------------------------------------------------------
+def test_confidence_is_required_before_a_call_can_be_saved(browser, server):
+    """Both classes are not enough: `saveable()` also wants a confidence.
+
+    It was optional until 2026-08-31 and therefore mostly absent, which cost the
+    campaign the one thing that separates "the legend is ambiguous here" from
+    "the imagery is" when two experts disagree. Asserted through the KEYBOARD,
+    because the whole reason this is affordable is that 1/2/3 were already bound
+    and merely untaught -- a mandatory field that needs the mouse is a different
+    and much worse change.
+    """
+    base, _ = server
+    page, ctx = open_app(browser, base, who="rae")
+    try:
+        page.keyboard.press("a")
+        page.keyboard.press("z")
+        page.wait_for_timeout(150)
+        assert page.evaluate("saveable()") is False
+        assert page.evaluate("document.getElementById('btn-save').disabled") is True
+        assert "onfidence" in page.text_content("#btn-save")
+
+        page.keyboard.press("Enter")            # must NOT save
+        page.wait_for_timeout(250)
+        assert page.evaluate("Object.keys(S.labels).length") == 0
+
+        page.keyboard.press("2")
+        page.wait_for_timeout(150)
+        assert page.evaluate("saveable()") is True
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(300)
+        assert page.evaluate("Object.keys(S.labels).length") == 1
+        assert page.evaluate("Object.values(S.labels)[0].confidence") == 2
+    finally:
+        ctx.close()
+
+
+def test_cannot_interpret_does_not_ask_for_confidence(browser, server):
+    """The other side of it. That row carries no call, `saveCurrent` blanks the
+    field on the way out, and "how sure are you that you cannot tell" is a
+    question with no use for the answer."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="rae")
+    try:
+        page.keyboard.press("k")
+        page.click("#uninterp-reasons button[data-reason='cloud']")
+        page.wait_for_timeout(150)
+        assert page.evaluate("saveable()") is True
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(300)
+        assert page.evaluate("Object.keys(S.labels).length") == 1
+        assert page.evaluate("Object.values(S.labels)[0].confidence") == ""
+    finally:
+        ctx.close()
+
+
+def test_progress_counts_this_experts_readings_not_the_whole_batch(browser, server):
+    """A batch that splits 100 points between two experts owes each of them ~52,
+    and a finished batch used to read "52 / 100" -- which is not a slow labeller,
+    it is a wrong denominator."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ann", batch="/solo-two.json")
+    try:
+        total = page.evaluate("myWorkload()")
+        n_points = page.evaluate("S.points.length")
+        assert total <= n_points
+        assert page.text_content("#pill-progress").strip() == f"0 / {total}"
+        label_here(page)
+        assert page.text_content("#pill-progress").strip() == f"1 / {total}"
+    finally:
+        ctx.close()
+
+
+def test_dropping_an_export_restores_it_instead_of_replacing_the_batch(browser, server):
+    """The bug this is about ATE WORK, and it ate it at the worst moment.
+
+    `exportBatch` writes the LABELLED rows and only those. Every dropped file
+    went to `adoptBatch`, so re-dropping your own export replaced the batch's
+    points with the handful you had finished: the count read `n / n`, the strip
+    lost every outstanding point, and there was no way back except re-opening
+    the batch. Exactly backwards for a file whose purpose is "carry on where I
+    stopped" -- and it is the file you reach for when sync has already failed,
+    so the state it destroyed was the state with no copy on the server.
+    """
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ann", batch="/solo-work.json")
+    try:
+        n_points = page.evaluate("S.points.length")
+        assert n_points >= 3, "need an unfinished batch for this to mean anything"
+        label_here(page)
+        label_here(page)
+        assert page.evaluate("Object.keys(S.labels).length") == 2
+
+        csv = page.evaluate("toCSV(Object.values(S.labels))")
+        assert page.evaluate("csv => looksLikeLabels(parseCSV(csv))", csv) is True
+
+        # a fresh browser: the work exists only in the file
+        page.evaluate("S.labels = {}; LS.save(S.batch.batch_id, {});"
+                      "Outbox._cache = {}; Outbox._flush();"
+                      "buildStrip(); updateProgress();")
+        assert page.evaluate("Object.keys(S.labels).length") == 0
+
+        page.evaluate("csv => importLabels(parseCSV(csv))", csv)
+        page.wait_for_timeout(300)
+
+        # the batch is intact and the work is back
+        assert page.evaluate("S.points.length") == n_points, \
+            "the export replaced the batch instead of restoring into it"
+        assert page.evaluate("Object.keys(S.labels).length") == 2
+        assert page.evaluate("Outbox.size()") == 2, "restored rows must re-sync"
+        assert page.text_content("#pill-progress").strip().startswith("2 / ")
+    finally:
+        ctx.close()
+
+
+def test_a_batch_file_is_still_adopted_rather_than_restored(browser, server):
+    """The other half of the branch. The two files look alike and mean opposite
+    things, so `looksLikeLabels` has to say no to a batch -- a batch CSV carries
+    points and no answers."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ann", batch="/solo-work.json")
+    try:
+        assert page.evaluate(
+            "looksLikeLabels(parseCSV('id,lon,lat\\np0,10,60\\np1,11,61\\n'))"
+        ) is False
+        # and a labels export missing the answer columns is not a labels file
+        assert page.evaluate(
+            "looksLikeLabels(parseCSV('point_id,lon,lat\\np0,10,60\\n'))"
+        ) is False
+    finally:
+        ctx.close()
+
+
+def test_a_restored_row_is_filed_under_the_expert_who_made_it(browser, server):
+    """`LS.key` is per-expert. Filing a colleague's readings under whoever
+    happened to drop the file would both hide them from their owner and corrupt
+    the agreement measurement -- so they go to the outbox (which groups by
+    expert) and NOT into this expert's workspace."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ann", batch="/solo-work.json")
+    try:
+        label_here(page)
+        csv = page.evaluate("toCSV(Object.values(S.labels))")
+        foreign = csv.replace(",ann,", ",bo,")
+        assert foreign != csv, "fixture did not contain the expert id"
+        page.evaluate("S.labels = {}; LS.save(S.batch.batch_id, {});"
+                      "Outbox._cache = {}; Outbox._flush();")
+        res = page.evaluate("csv => importLabels(parseCSV(csv))", foreign)
+        assert res["foreign"] == 1, res
+        assert page.evaluate("Object.keys(S.labels).length") == 0, \
+            "bo's reading must not appear in ann's workspace"
+        assert page.evaluate("Outbox.size()") == 1, "but it must still sync"
+        assert page.evaluate(
+            "Object.values(Outbox.all())[0].expert_id") == "bo"
+    finally:
+        ctx.close()
+
+
 def test_rank_score_and_channel_are_hidden_until_the_point_is_saved(browser, server):
     """"rank 1, uncertainty" tells the interpreter the model finds this hard.
 
@@ -2096,7 +2412,8 @@ def test_rank_score_and_channel_are_hidden_until_the_point_is_saved(browser, ser
         assert "rank in batch" not in panel
 
         page.keyboard.press("a"); page.keyboard.press("z")
-        page.keyboard.press("Enter"); page.wait_for_timeout(300)
+        page.keyboard.press("2"); page.keyboard.press("Enter")
+        page.wait_for_timeout(300)
         page.evaluate("goTo(0)")
         page.wait_for_timeout(300)
         assert page.evaluate(
@@ -2146,6 +2463,10 @@ ASSIGNED_BATCH = {
 #: to render and work with Earth Engine never signed in: hosting is static, and
 #: sign-in is on the critical path for imagery only.
 EV_YEARS = list(range(2017, 2026))
+#: The declared annual NDVI. `bands.B8` is derived from it below so the
+#: fixture's series and its bands agree -- see the note there.
+EV_NDVI = [0.71, 0.70, 0.68, 0.66, 0.30, 0.28, 0.29, 0.27, 0.26]
+
 EVIDENCE_BATCH = {
     "campaign": "test-campaign", "batch_id": "ev001", "channel": "coverage",
     "instructions": None, "evidence_version": "ev1",
@@ -2170,11 +2491,21 @@ EVIDENCE_BATCH = {
         "evidence": {
             "v": {"dw_2018": "trees", "dw_2024": "crops",
                   "wc_2021": "tree cover"},
-            "t": {"ndvi": [0.71, 0.70, 0.68, 0.66, 0.30, 0.28, 0.29, 0.27, 0.26],
+            "t": {"ndvi": EV_NDVI,
                   "ndmi": [0.2] * 9, "nbr": [0.5] * 9,
                   "n": [12] * 9,
-                  "bands": {b: [1000 + j * 100 for j in range(9)]
-                            for b in ("B2", "B3", "B4", "B8", "B11", "B12")}},
+                  # B4/B8 are DERIVED FROM `EV_NDVI` rather than set flat. Every
+                  # band used to carry the same [1000..1800], so B8 == B4, the
+                  # real NDVI was 0 in all nine years and every chart dot came
+                  # out the same brown -- while the `ndvi` list above said the
+                  # series ran 0.71 -> 0.26. A fixture whose declared series and
+                  # declared bands disagree cannot test a colour computed from
+                  # the bands.
+                  "bands": dict({b: [1000 + j * 100 for j in range(9)]
+                                 for b in ("B2", "B3", "B11", "B12")},
+                                B4=[1000] * 9,
+                                B8=[round(1000 * (1 + v) / (1 - v))
+                                    for v in EV_NDVI])},
         },
     } for i in range(3)],
 }
@@ -2214,10 +2545,22 @@ SPRITE_PNG = _sprite_png()
 #: under an unarrived chip and the live request both have to be drawn through
 #: the POINT's bounds, or the colour and the image are two exposures of one
 #: pixel. See `tests/test_chip_ramp.py` for the Python/JavaScript agreement.
+def _js_const(name: str) -> str:
+    """The literal a top-level `const NAME = ...;` is assigned in the app."""
+    m = re.search(rf"^const {re.escape(name)} = (.+?);\s*$",
+                  APP_HTML.read_text(), re.M)
+    assert m, f"{name} not found in label_app.html"
+    return m.group(1)
+
+
 BAKED_STRETCH = {"ev000": {b: [200.0, 1400.0]
                            for b in ("B2", "B3", "B4", "B8", "B11", "B12")}}
 BAKED_CHIPS = {
-    "version": "chip2", "dir": "ev001_chips", "years": EV_YEARS,
+    # Read from the app rather than pinned: a fixture that names a version the
+    # app has moved past tests the FALLBACK, silently, for every test that uses
+    # it -- and the fallback is the thing these tests exist to keep off.
+    "version": _js_const("CHIP_BAKE_VERSION").strip("'"),
+    "dir": "ev001_chips", "years": EV_YEARS,
     "cell": 176, "width_m": 640, "cap": 12, "format": "png",
     "combos": ["SWIR1/NIR/GREEN"],
     "stretch": BAKED_STRETCH, "stretch_pct": [2, 98], "stretch_width_m": 640,
@@ -2482,7 +2825,15 @@ def test_the_legend_teaches_the_cribsheets_load_bearing_carve_outs(browser, serv
         assert "oil palm" in body and "timber plantation" in body
         assert "nature \u2192 cropland" in body
         # ...and a clearance with no class change still has only the flag
-        assert "change seen, ends match" in body
+        assert "change seen, endpoints match" in body
+        # The map marks three different spatial units. Only the 10 m square is
+        # labelled; the point, scale square and sampling square are not targets.
+        assert "yellow 10 m label square" in body
+        assert "majority cover" in body
+        assert "not the centre coordinate" in body
+        assert "white 100 m square is a scale reference only" in body
+        assert "dashed 5 km sampling square provides context only" in body
+        assert "call the point" not in body
 
         hints = page.evaluate("() => CLASSES.map(c => c.key + ': ' + c.hint)")
         nature, crop, art = [h.lower() for h in hints]
@@ -2649,7 +3000,10 @@ def test_wayback_is_a_basemap_and_stays_under_the_overlays(browser, server):
         ids = page.evaluate(order)
         assert ids.index("wayback-layer") < ids.index("ee-active"), ids
         # everything the interpreter must see is still above both
-        for v in ("footprint", "scalebox", "here-halo", "here-dot"):
+        # `cell` above all: it is the unit being called, and it replaced the
+        # centre dot (`here-dot`), which said "judge this point" in the only
+        # language a map has.
+        for v in ("footprint", "scalebox", "cell", "here-halo"):
             assert ids.index("ee-active") < ids.index(v), (v, ids)
     finally:
         ctx.close()
@@ -2773,7 +3127,7 @@ def test_an_index_scheme_is_reported_as_live_by_design_not_as_a_failure(
         page.evaluate("chipVis.combo = 'NDVI'; applyChipVis();")
         page.wait_for_timeout(400)
         note = page.text_content("#ev-strip-note")
-        assert "drawn fresh" in note, note
+        assert "generated when requested" in note, note
         assert "not being used" not in note, note
         # and it is marked as information rather than as a fault
         assert page.evaluate(
@@ -2937,9 +3291,23 @@ def test_the_evidence_renders_with_earth_engine_never_signed_in(browser, server)
         # ...and every one of those dots carries the year's colour under the
         # current vis scheme, mixed from the BAKED bands. This is the half of
         # "what did this year look like" that does not wait on Earth Engine.
+        # Read the COMPUTED fill. This assertion used to read the `fill`
+        # attribute and passed for weeks while every dot on screen was accent
+        # blue: in SVG a CSS property beats a presentation attribute, so the
+        # stylesheet was repainting a correct attribute (AL11.6b). The colour is
+        # now an inline style, which does win.
         assert page.evaluate(
             "[...document.querySelectorAll('#ev-chart .ev-dot')]"
-            ".every(e => /^#[0-9a-f]{6}$/.test(e.getAttribute('fill') || ''))")
+            ".every(e => /^rgb\\(/.test(getComputedStyle(e).fill))")
+        accent = page.evaluate(
+            "getComputedStyle(document.documentElement)"
+            ".getPropertyValue('--accent').trim()")
+        fills = page.evaluate(
+            "[...document.querySelectorAll('#ev-chart .ev-dot')]"
+            ".map(e => getComputedStyle(e).fill)")
+        assert len(set(fills)) > 1, (
+            f"every dot the same colour ({fills[0]}) -- the stylesheet is "
+            f"painting over the computed colour again; accent is {accent}")
         # the filmstrip is there too, tinted the same way, with the note about
         # the missing connection BESIDE it rather than in place of it
         assert page.evaluate(
@@ -3056,7 +3424,7 @@ def test_the_queues_are_a_property_of_the_batch_file(browser, server):
         page.wait_for_timeout(200)
         assert page.evaluate("S.points.filter(p => outstanding(p)).map(p => p.id)") \
             == ["a002"]
-        assert "Second reading" in page.text_content("#second-banner")
+        assert "Independent overlap sample" in page.text_content("#second-banner")
     finally:
         ctx.close()
 
@@ -3070,11 +3438,179 @@ def test_an_expert_the_batch_does_not_name_is_told_so(browser, server):
         page.wait_for_function("S.points.length === 3", timeout=15000)
         assert page.evaluate("queueCounts()") == \
             {"mine": 0, "second": 0, "unassigned": 0}
-        assert "is assigned to you" in page.text_content("#queue-note").lower()
+        assert "assigned to you" in page.text_content("#queue-note").lower()
         page.evaluate("announceDone()")
         page.wait_for_timeout(200)
         report = page.text_content("#loading")
         assert "assigned to you" in report.lower()
         assert "complete" not in report.lower()
+    finally:
+        ctx.close()
+
+
+# ── the view is addressable, and the unit is a pixel ────────────────────────
+# Two experts settle a disagreement by looking at the same thing. Until the
+# link carried the point and the scheme, the most this app could hand over was
+# a batch -- and the thing being disagreed about was drawn as a square that was
+# not any pixel of the imagery it was drawn on.
+
+def test_a_link_opens_the_point_and_the_view_it_names(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base,
+                         extra="&point=t004&scheme=NIR/RED/GREEN&w=320")
+    try:
+        assert page.evaluate("S.points[S.i].id") == "t004"
+        assert page.evaluate("chipVis.combo") == "NIR/RED/GREEN"
+        assert page.evaluate("chipVis.w") == 320
+        # ...and the rest of the link survives the rewrite, or the next reload
+        # of the URL the interpreter is now looking at loads no batch at all.
+        url = page.evaluate("location.search")
+        assert "batch=" in url and "campaign=test-campaign" in url
+    finally:
+        ctx.close()
+
+
+def test_the_link_follows_the_interpreter(browser, server):
+    """Stepping to a point rewrites the URL, so the link to send is always the
+    one in the address bar."""
+    base, _ = server
+    page, ctx = open_app(browser, base)
+    try:
+        page.evaluate("goTo(6)")
+        assert "point=t006" in page.evaluate("location.search")
+        page.evaluate("chipVis.combo = 'RED/GREEN/BLUE'; applyChipVis()")
+        assert "scheme=RED%2FGREEN%2FBLUE" in page.evaluate("location.search")
+    finally:
+        ctx.close()
+
+
+def test_a_link_to_a_point_this_batch_does_not_have_still_opens(browser, server):
+    """A stale link is a link to the wrong round, not a reason to show nothing:
+    it resumes where the interpreter was, and the URL corrects itself."""
+    base, _ = server
+    page, ctx = open_app(browser, base, extra="&point=not-in-this-batch")
+    try:
+        assert page.evaluate("S.points.length") > 0
+        assert "point=t000" in page.evaluate("location.search")
+    finally:
+        ctx.close()
+
+
+def test_the_square_drawn_is_the_sentinel_pixel(browser, server):
+    """`s2Cell` in the page against `label_cell.cell` in Python — the same
+    check `tests/test_label_cell.py` runs in node, but through the app's own
+    `pointCell`, which is what actually reaches the map."""
+    sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
+    py_cell = pytest.importorskip("label_cell")
+    base, _ = server
+    page, ctx = open_app(browser, base)
+    try:
+        got = page.evaluate("(() => { const p = S.points[0];"
+                            " return { ring: pointCell(p).ring,"
+                            "          epsg: pointCell(p).epsg,"
+                            "          lon: p.lon, lat: p.lat }; })()")
+        want = py_cell.cell(got["lon"], got["lat"])
+        assert got["epsg"] == want["epsg"]
+        for a, b in zip(got["ring"], want["ring"]):
+            assert abs(a[0] - b[0]) < 1e-6 and abs(a[1] - b[1]) < 1e-6
+        # The property that is the whole point: the point is INSIDE the square
+        # and is not its centre.
+        xs = [c[0] for c in got["ring"]]
+        ys = [c[1] for c in got["ring"]]
+        assert min(xs) <= got["lon"] <= max(xs)
+        assert min(ys) <= got["lat"] <= max(ys)
+        assert abs((min(xs) + max(xs)) / 2 - got["lon"]) > 1e-9
+    finally:
+        ctx.close()
+
+
+def test_a_baked_cell_is_drawn_rather_than_recomputed(browser, server):
+    """The bake is the authority: the builders reduce over it, and a page that
+    quietly preferred its own arithmetic would draw a square nothing measured."""
+    base, _ = server
+    page, ctx = open_app(browser, base)
+    try:
+        ring = [[10.0, 60.0], [10.001, 60.0], [10.001, 60.001],
+                [10.0, 60.001], [10.0, 60.0]]
+        got = page.evaluate(
+            "(r) => pointCell({ lon: 10.5, lat: 60.5,"
+            "                   cell: { epsg: 32632, ring: r } }).ring", ring)
+        assert got == ring
+    finally:
+        ctx.close()
+
+
+# ── the light / dark chrome ─────────────────────────────────────────────────
+# Light is the default and dark is a toggle. The failure mode this pair guards
+# is not "the toggle does nothing" -- that is visible in a second -- but the
+# quiet one: a rule that hard-codes a colour has no dark reading, so a single
+# panel stays white inside an otherwise dark app and nobody notices until
+# somebody labels at night. The stylesheet's own comment claims every rule is
+# written against the tokens; these assert the claim.
+
+#: Tokens the dark block deliberately does NOT restate, and why. The three
+#: class swatches are MAP colours -- they match the raster, the chips and the
+#: legend, and a swatch that means one thing on the imagery and another in the
+#: panel is worse than a swatch that is slightly dark for its ground.
+#: `--glass-blur` is not a colour at all: it is the frost itself, and both
+#: themes are the same sheet of glass over the same map.
+INHERITED_BY_DARK = {"--nature", "--cropland", "--artificial", "--brand-ramp",
+                     "--glass-blur"}
+
+
+def _theme_blocks():
+    src = APP_HTML.read_text()
+    style = src[src.index("<style>"):src.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+
+    def tokens(head):
+        body = style[style.index(head) + len(head):]
+        return set(re.findall(r"(--[a-z0-9-]+)\s*:", body[:body.index("}")]))
+
+    return tokens(":root {"), tokens('html[data-theme="dark"] {')
+
+
+def test_every_token_has_a_dark_reading():
+    light, dark = _theme_blocks()
+    assert dark - light == set(), (
+        f"the dark block invents tokens the light block never defines: "
+        f"{sorted(dark - light)} -- light is the default, so these are "
+        f"undefined until somebody turns dark on")
+    missing = light - dark - INHERITED_BY_DARK
+    assert missing == set(), (
+        f"{sorted(missing)} are defined only for the light theme. Either give "
+        f"each a dark value or add it to INHERITED_BY_DARK with the reason it "
+        f"is the same colour in both.")
+
+
+def test_the_toggle_round_trips_and_survives_a_reload(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="e1")
+    try:
+        html = page.locator("html")
+        ground = lambda: page.evaluate(
+            "getComputedStyle(document.body).backgroundColor")
+        light_ground = ground()
+        assert html.get_attribute("data-theme") is None      # light is bare :root
+
+        page.click("#btn-theme")
+        assert html.get_attribute("data-theme") == "dark"
+        dark_ground = ground()
+        assert dark_ground != light_ground, (
+            f"the attribute flipped and nothing repainted ({dark_ground})")
+        assert page.evaluate(
+            "localStorage.getItem('recover-labels:theme')") == "dark"
+
+        # ...and it is applied in the head, before the first paint: a theme
+        # restored in initChrome() is a white flash on every load, on the
+        # imagery, which is the thing being looked at.
+        page.reload(wait_until="load")
+        assert page.locator("html").get_attribute("data-theme") == "dark"
+        assert page.evaluate("document.readyState") in ("interactive", "complete")
+
+        page.click("#btn-theme")
+        assert page.locator("html").get_attribute("data-theme") is None
+        assert page.evaluate(
+            "localStorage.getItem('recover-labels:theme')") == "light"
     finally:
         ctx.close()

@@ -104,7 +104,44 @@ end-of-batch review table for a final scan pass.
 
 ---
 
+## T4.7 — the two gaps §AL11 found and did not close
+
+Both are the same shape as the faults §AL8 is about: the app looks right and
+says nothing.
+
+1. **Index filmstrips are offered but not baked.** `CHIP_INDEX` (NDVI / NDMI /
+   NBR) is in the chip scheme `<select>`, and `build_batch_chips.COMBOS` holds
+   only the four three-band schemes — so picking one of the three drops all nine
+   years to live Earth Engine, which with nobody signed in is the flat-tint
+   strip §AL9 and §AL10 were about. The indices come from bands the existing
+   per-point request **already fetches**, so this is close to free to add
+   *during* a re-bake and a whole second bake to add after one. Do it the next
+   time a batch is baked. `chipBakeMiss()` should also name "this scheme is not
+   in `chips.combos`" as its own reason rather than as a generic miss.
+2. **The deploy workflow checks that bake directories exist and nothing else.**
+   It does not compare `evidence_version`, the point-id set, `chips.combos`, or
+   sprite and sidecar counts against the builders. That is why b001 was deployed
+   as `ev1` with ESRI stopping at 2023 while the builder had been `ev2` reaching
+   2025 for a week, with no warning anywhere. The check belongs next to the
+   existing "Check the batches carry their bakes" step in
+   `.github/workflows/pages.yml`.
+
+---
+
 ## If you are changing the app, read this first
+
+**The labelling unit is one Sentinel-2 10 m pixel, by majority cover**
+(§AL11.1, §AL12.1). It is defined once in `src/label_cell.py` and mirrored by
+`s2Cell()` in the app (`tests/test_label_cell.py` runs the two against each
+other in node), and **five** things state that one rule: the `cell` map layer
+on both maps, the first-run brief, the chip marker in `build_batch_chips.py`
+and `chipUrl`, the dense series' read in `build_batch_dense.py` mirrored by
+`denseFetchLive`, and the `cell` baked into each point by
+`build_label_batches.py`. Changing one without the others puts the chart, or
+the picture, on different ground from the call — which is invisible and arrives
+as a disagreement about the legend. A square *centred on the point* is not a
+pixel of anything: it straddles four and covers none. That was the state
+between the two sections, and it is the mistake to not make again.
 
 Three things in §AL8 were **silent** faults — the app looked correct while
 losing the measurement — and each has a guard that is easy to remove by

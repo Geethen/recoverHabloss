@@ -336,12 +336,24 @@ def agreement(frame: pd.DataFrame) -> tuple[int, float, pd.DataFrame]:
     row per (batch, point, expert), so a row count would be the same thing --
     but only as long as dedupe holds, and this is the number the whole campaign
     is bought on. Say what is meant.
+
+    "CANNOT INTERPRET" IS A CALL, AND DISAGREEING WITH IT IS A DISAGREEMENT.
+    This ran on `usable()` until 2026-08-31, which drops rows with no
+    transition -- so a point where one expert read `Cropland -> Nature` and the
+    other said the imagery would not support a call was not a disagreement, not
+    an agreement, and not a doubled point: it left the denominator entirely. That
+    is the single most informative pair in the set, because it is the one that
+    says the two of them are not looking at the same evidence, and it was the
+    one being discarded. The transition is compared as `(not interpretable)` so
+    it lands in the confusion listing beside the legend pairs.
     """
-    good = usable(frame)
-    who = who_column(good)
-    grouped = good.groupby(["batch_id", "point_id"])["transition"]
-    repeats = grouped.nunique(dropna=True)
-    multi = good.groupby(["batch_id", "point_id"])[who].nunique()
+    frame = frame.copy()
+    call = frame["transition"].astype("string").fillna("").str.strip()
+    frame["_call"] = call.where(call != "", "(not interpretable)").astype(str)
+    who = who_column(frame)
+    grouped = frame.groupby(["batch_id", "point_id"])["_call"]
+    repeats = grouped.nunique(dropna=False)
+    multi = frame.groupby(["batch_id", "point_id"])[who].nunique()
     doubled = multi[multi > 1].index
     if not len(doubled):
         return 0, float("nan"), pd.DataFrame()
@@ -349,9 +361,9 @@ def agreement(frame: pd.DataFrame) -> tuple[int, float, pd.DataFrame]:
     # Which pairs of calls disagree, so the legend boundary at fault is visible
     # rather than just the headline rate.
     rows = []
+    indexed = frame.set_index(["batch_id", "point_id"])
     for key in doubled:
-        calls = sorted(set(good.set_index(["batch_id", "point_id"])
-                           .loc[[key], "transition"]))
+        calls = sorted(set(indexed.loc[[key], "_call"]))
         if len(calls) > 1:
             rows.append({"batch_id": key[0], "point_id": key[1],
                          "calls": " | ".join(calls)})

@@ -1,47 +1,26 @@
 #!/usr/bin/env bash
-# Refuse a commit that would put the campaign's live backend values into this
-# PUBLIC repository.
+# Refuse a commit that would put a real SECRET into this PUBLIC repository.
 #
-# `app/config.js` is committed BLANK on purpose -- .github/workflows/pages.yml
-# overwrites it from the LABEL_APP_CONFIG_JS Actions secret at build time, so
-# the deployment loses nothing by the repo copy being empty. But a local serve
-# needs the real /exec URL and submit token in that same file, so the working
-# tree legitimately carries them and one `git commit -a` publishes them.
+# The line is drawn by one question: does every browser that opens the app
+# already have this value? If it does, committing it publishes nothing.
 #
-# This checks the STAGED blob, which is what a commit actually records -- not
-# the working tree, which is allowed to hold the live values.
+#   - `sheetUrl` and `submitToken` in app/config.js pass that test, and are
+#     committed on purpose (2026-09-04). The page downloads config.js, so every
+#     labeller has both. The /exec endpoint has only the powers Code.gs grants
+#     it, and the token is anti-spam rather than authentication -- it keeps junk
+#     rows out and draws no line between the two experts. This hook used to
+#     refuse them; blanking them hid them from nobody and cost a dragged-in copy
+#     of app/ that did not work.
+#   - the Earth Engine service-account PRIVATE KEY fails it, absolutely. No
+#     browser ever sees it -- the SDK refuses a browser-side private key, which
+#     is the whole reason Code.gs brokers a one-hour token -- so it must never
+#     reach a commit, in any file.
 #
 # Enable (once per clone):  git config core.hooksPath .githooks
 set -u
 
 fail=0
-staged=$(git diff --cached --name-only --diff-filter=ACM)
 
-case "$staged" in *app/config.js*)
-  cfg=$(git show :app/config.js 2>/dev/null || true)
-  for field in sheetUrl submitToken eeClientId; do
-    val=$(printf '%s\n' "$cfg" | sed -nE "s/^[[:space:]]*$field:[[:space:]]*'(.*)',?[[:space:]]*$/\1/p")
-    if [ -n "${val:-}" ]; then
-      echo "pre-commit: app/config.js is staged with a non-empty $field."
-      echo "pre-commit:   $field: '$val'"
-      fail=1
-    fi
-  done
-  if [ "$fail" = 1 ]; then
-    echo "pre-commit:"
-    echo "pre-commit: This repository is public. Those values belong in the"
-    echo "pre-commit: LABEL_APP_CONFIG_JS Actions secret, not in a commit."
-    echo "pre-commit: Stage a blank copy without disturbing your working tree:"
-    echo "pre-commit:"
-    echo "pre-commit:   sed -E \"s|^(  (sheetUrl|submitToken|eeClientId): ')[^']*|\\1|\" \\"
-    echo "pre-commit:       app/config.js > /tmp/cfg.js"
-    echo "pre-commit:   git update-index --add --cacheinfo 100644,\$(git hash-object -w /tmp/cfg.js),app/config.js"
-  fi
-;;
-esac
-
-# A service-account private key must never reach this repo in any file.
-#
 # The pattern is assembled from pieces on purpose: spelled out in one string it
 # matches THIS LINE in its own staged diff, and the guard then refuses every
 # commit that touches itself.

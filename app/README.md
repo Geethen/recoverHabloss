@@ -38,6 +38,24 @@ Labels stay in the browser and come out of the **export** button until you point
 `config.js` at a Sheet. Opening the file directly with `file://` does not work —
 the app fetches its batch manifest, and browsers block that on `file://`.
 
+**Dropping an export back in restores it; dropping a batch replaces the batch.**
+The two files look alike and mean opposite things, so the branch is on the
+content — a labels CSV carries answer columns (`point_id`, `labelled_at`,
+`class_2018`) that no batch file has. Until 2026-08-31 every dropped file went to
+`adoptBatch`, so re-dropping your own export replaced the batch's 100 points with
+the 52 you had finished: the count read `52 / 52` and every outstanding point
+was gone from the strip. Exactly backwards for a file whose purpose is *carry on
+where I stopped* — and it is the file you reach for precisely when sync has
+failed, so the state it destroyed was the state with no copy on the server.
+
+A restore is grouped by batch, so an export covering a batch that is not on
+screen still lands in that batch's storage and is there when you open it. Rows
+are filed under the expert who **made** them (`LS.key` is per-expert), and a
+colleague's rows still go to the outbox — which groups by expert — so recovering
+someone else's export and syncing it for them works and stays correctly
+attributed. Everything is re-queued; the Sheet upserts, so re-sending a row that
+already arrived changes nothing.
+
 ## Deploying it for other people
 
 Any static host serves it: GitHub Pages, an S3 bucket, a folder behind nginx.
@@ -77,8 +95,7 @@ This repository includes a workflow at `.github/workflows/pages.yml` that
 publishes only `app/` when changes land on `main`. In the GitHub repository,
 set **Settings ▸ Pages ▸ Source** to **GitHub Actions**, then add the complete
 deployment-specific `config.js` as the `LABEL_APP_CONFIG_JS` Actions secret and
-push the app. The workflow injects that secret only into the Pages artifact;
-the checked-in template remains local-only.
+push the app. The workflow injects that secret only into the Pages artifact.
 
 **Without the secret the build fails, on purpose.** It used to publish anyway,
 which meant a deployment with no Sheet, no roster and no Earth Engine that looks
@@ -90,8 +107,21 @@ sidecar directory in the artifact**, because a batch deployed without its bakes
 falls back to live Earth Engine, or to flat colour swatches for anyone not
 signed in.
 
-The shared token is only an access barrier, not a secret; rotate it in Apps
-Script before a public campaign and keep the checked-in template blank.
+**The checked-in `config.js` now carries this campaign's real `sheetUrl`,
+`submitToken` and roster** (2026-09-04). That is deliberate and it is not a
+leak: the page downloads that file, so every labeller already has all three, and
+a blank template only produced a dragged-in copy of `app/` that did not work and
+a reader who could not tell "unconfigured" from "redacted". The `/exec` URL is
+not an account — it has exactly the powers `Code.gs` grants it — and the token
+is **anti-spam rather than authentication**: it stops junk rows from whoever
+finds the URL and draws no line between the two experts. Rotate it in Apps
+Script *and* in `config.js` together. The one value that is a real secret, the
+Earth Engine service-account key, is not in either file and cannot be.
+
+**Two sources of truth, kept in step by hand.** The workflow still overwrites
+`config.js` from `LABEL_APP_CONFIG_JS`, so the committed file governs a local
+serve and the secret governs the published app. Change one and change the
+other, or Pages will keep serving the older roster or a rotated-away token.
 
 **Set `eeAuthMode: 'service'` in that secret.** On Pages specifically, the
 service account is not just the nicer path, it is the one that works without
@@ -121,6 +151,14 @@ alternatives if it ever stops being.
 One URL can serve several campaigns: `?sheetUrl=`, `?campaign=`, `?manifest=`,
 `?batch=`, `?submitToken=`, `?expert=`, `?eeAuth=` and `?zoom=` all override
 `config.js`.
+
+**The view is addressable.** `?point=<id>`, `?scheme=` and `?w=` open a named
+point under a named filmstrip scheme and width, and the app rewrites them as
+the interpreter moves — so the link to send someone is always the one in the
+address bar. It is how a disagreement gets settled: the other reader opens
+exactly what you were looking at, on the same imagery and the same stretch. A
+point the batch does not carry resumes normally rather than showing nothing,
+and `expert` is never added to the link — that identity is the reader's own.
 `?debug=1` turns on a console performance summary (`perfReport()`).
 
 ### Vendored MapLibre
@@ -351,6 +389,72 @@ capture dates, and most of them will turn out to be the latter.
 
 ## Using it
 
+### The unit is one Sentinel-2 pixel, by majority cover
+
+**Judge the yellow square, and there is no point at its centre to prefer.**
+Whichever class covers most of it is the call: a house in the corner of an
+otherwise grassy square is Nature, a square that is two-thirds rooftop is
+Artificial.
+
+That square is a **real 10 m Sentinel-2 pixel** — the point's UTM coordinates
+floored to a multiple of 10 m in the zone MGRS puts it in, which is the grid
+Sentinel-2 granules are delivered on *and* the grid the deployed map is written
+on (EPSG:32632, 10 m, origin an exact multiple of 10). That is why it is not
+centred on the marker. A 10 m square centred on the point would straddle four
+pixels and be none of them, which is what it was until 2026-08-31: the
+interpreter judged one footprint, the dense series read a second, and the model
+predicts a third.
+
+This is not a style preference. The original RECOVER sampling called each 10 m
+cell by majority cover, and the model these labels train is a 10 m model — so an
+interpreter judging the centre pixel is generating targets for a different
+question than the one the training set was defined on, invisibly, on the
+Cropland / Nature boundary the ledger already names as the change-F1 ceiling.
+The app said "judge the point, not the whole square" until 2026-08-31 and drew
+nothing at all at 10 m: the marker was a 2.6 px dot with a 13 px halo in
+*screen* pixels, identical at every zoom, naming no ground area. Two
+interpreters each guessing their own footprint arrives in the data as a
+disagreement about the legend.
+
+The definition lives in **`src/label_cell.py`** and in **`s2Cell()`** in the
+app, which are the same arithmetic in two languages and are run against each
+other in node by `tests/test_label_cell.py`. A batch built by
+`build_label_batches.py` carries its cells baked (`cell` on each point) and the
+baked one is what gets drawn; a `.csv`/`.geojson` dropped on the window is
+computed in the browser. Everything that reads the cell moves as one:
+
+* the **`cell` map layer** draws the pixel (checkbox: *the Sentinel-2 pixel*),
+  on the Wayback compare map as well as the main one;
+* **no centre dot.** It was 2.6 screen pixels at every zoom and it was the only
+  thing on the map naming the call, so it said *judge this point*. The red ring
+  that remains is a **locator** and fades out between z15 and z17, as the cell
+  itself becomes big enough to see;
+* the **dense series** reads `reduceRegion` over the **point** at scale 10,
+  which is the value of the pixel containing it in the granule's own grid — the
+  cell exactly, with no geometry to get wrong. It read a **30 m radius circle at
+  20 m** until 2026-08-31, roughly 28× the area, then a point-centred square;
+* the **chip filmstrip** paints the cell into every year (see below);
+* the **brief** states the rule on first run.
+
+The recipe change bumps the bake to **`dense3`**. An older sidecar is the old
+circle and is deliberately *not* served — the app falls back to live Earth
+Engine on a version it does not know, so a batch baked before this must be
+re-baked with `--force`.
+
+### Confidence is required
+
+Both classes are not enough to save: `1` / `2` / `3` are mandatory on a real
+call. Those keys were bound all along and simply never taught, so this costs one
+keystroke. It is *not* asked on the **cannot interpret** path, where the row
+carries no call.
+
+It was optional until 2026-08-31 and therefore mostly absent, which cost more
+than it looks: an unresolved disagreement between two experts is a different
+object depending on whether both were sure, and without the number there is no
+way to tell "the legend is ambiguous here" from "the imagery is".
+
+### The classes
+
 Pick 2018 and 2024 from {Nature, Cropland, Artificial}; the transition is
 derived. **The classes are LUCAS as the campaign cribsheet states them**, and
 the legend links the full document from its summary and from inside the fold —
@@ -511,6 +615,190 @@ the sync button), because a row is durable in localStorage the instant it is
 made and a 1.2 s debounce turned a 100-point batch into ~100 lock-taking POSTs
 against a backend where every write takes one global script lock.
 
+### Light or dark chrome
+
+The **☾ dark / ☀ light** button in the header. Light is the default; the choice
+is remembered per browser and applied in the `<head>`, before the first paint,
+so a returning dark labeller does not get a white flash across the imagery on
+every load. `prefers-color-scheme` is deliberately *not* consulted — the choice
+here is about reading imagery for hours, not about the operating system.
+
+The chrome is the only thing that changes. The imagery, the chips, the three
+class swatches and every dataset's own legend colours are identical in both,
+because they are the *measurement*: a swatch that means one thing on the raster
+and another in the panel is worse than a swatch that is slightly dark for its
+ground.
+
+The palette and the control grammar are Weather Lab's. Note *Weather Lab*, not
+`deepmind.google` — the marketing site and the app disagree on the two things
+that decide whether this reads right, and copying the site (which is what the
+first pass did, because the app is behind a Google sign-in and its CSS cannot
+be fetched) gets both backwards:
+
+- **The greys are warm.** `#e9e9e7` ground, `#f2f2ef` panels, `#d7d7d2`
+  dividers, `#6f6f6b` secondary text — a faintly yellow-green neutral, not the
+  cool blue-grey of the marketing pages. And **nothing is pure white**; a stark
+  white panel is the single most obvious tell. This is load-bearing rather than
+  cosmetic: `--control` is a *translucent white*, so if a panel here ever goes
+  back to `#fff` every control on it disappears.
+- **The chrome is quiet.** A control is that translucent white with a soft
+  `--line-strong` hairline — not a saturated tonal fill, which is what the
+  brand site's `.button--tonal` would have you write. Their own status chip is
+  exactly this, and their toggles are `#d3d3cd` with a `#5c5c58` knob. Colour is
+  spent only where it *means* something: the three classes, and the accent.
+- **The shape scale is coarse and consistent** — 8 px chip, 16 px row or field
+  or tile, ~24 px floating panel, full pill for anything that toggles. Nothing
+  lands between those.
+- **A set of exclusive options is a track, not a row of boxes**: one filled
+  track, `padding: 4px`, `gap: 4px`, transparent pill segments, the chosen one
+  raised to white. Confidence, the Wayback year picker and the chart's series
+  toggle are all that shape. The year picker wraps to three rows, so its track
+  is a rounded rect rather than a pill.
+- **Weight 700 appears three times in 688 KB of DeepMind's CSS.** The scale is
+  500 for a title, 450 for a control, 400 for body. Section labels are
+  **sentence case in a quiet grey**, not small-caps eyebrows — that was the
+  loudest thing on the panel and it is a different design language.
+
+The primary action is charcoal rather than the accent, which is what keeps blue
+meaning one thing everywhere: *selected*.
+
+- **The panel is a layer over the map, frosted and rounded** — a translucent
+  warm ground behind a blur, with a 30 px rounded left edge, so the imagery
+  reads *through* the chrome. That needs map underneath it, and a first attempt
+  that pulled the panel 30 px left with a negative margin only frosted a 30 px
+  strip: the other 360 px sat on the page ground and read as a flat slab. So
+  **`#panel` is `position: absolute` over a full-width `#map`** — and the one
+  thing that then has to be right is the camera. With the map running under the
+  panel, `jumpTo({center})` puts the point being labelled in the middle of the
+  *canvas*, which is behind the glass. MapLibre's `padding` is exactly the fix,
+  and `applyMapPad()` sets it on the main map and the Wayback compare map with
+  the same value — `wbCmpSync()` mirrors `map.getCenter()`, which **is** the
+  padded centre, so the two only stay registered while both pad identically.
+  `fitBounds` takes its own padding argument, which *replaces* the transform's,
+  so the panel width is added back there by hand. The padding is capped at 60%
+  of the canvas: a narrow window loses the effect, not the point.
+
+  Anything anchored to the map's right edge clears the whole panel now
+  (`calc(var(--panel-w) + 12px)`), and the lightbox backdrop stops at
+  `var(--panel-w)`.
+
+- **Glass alpha is set by the darkest scene, not the prettiest one.** Their
+  panel is `.92`. A 60%-opaque one looks better over farmland and then fails
+  over open water or hill shadow — a third of black through the panel drags it
+  to mid-grey and `--ink` on it falls to ~4.5:1. This app is looked at over
+  every scene a global draw contains, so the panel sits near their number and
+  only the small cards, which the eye can leave, stay lighter. For the same
+  reason the blur **de-saturates** (`saturate(88%)`): the `125%` it started
+  with was meant to put back what the blur washes out, and over forest it took
+  the map's green, amplified it and spread it through 26 px of blur until the
+  whole panel read olive. Large single-hue fields are the normal case in
+  satellite imagery, not an edge one.
+- **The type is larger than a dense tool would choose.** Their row is 16 px,
+  section 18, title 24, on a 520–560 px panel; this is 14/16/17 on a 390 px
+  one — the same order of sizes, one notch down. The chips were 11.5 px before,
+  which is two notches below anything in the reference and the main reason it
+  read as a different product.
+
+Below ~810 px of window the scale steps back down one notch. That is not
+taste: what falls off the bottom of `#panel-head-scroll` first is
+**confidence**, which is required to save, and a control the interpreter has to
+go looking for to finish a point is worse than a control set one size smaller.
+The step-down block lives at the *end* of the stylesheet — `@media` adds no
+specificity, so the first version of it sat at the top and was overridden by
+every rule that followed, changing nothing. At 1280×720 and 1366×768 the form
+now overflows *less* than it did before the type came up at all.
+
+The numbers are theirs; the *sizes* are scaled to this app's 13 px base. Their
+base button gutter is `12px 24px`, and a 24 px gutter in a panel that has to
+hold nine years of evidence is a different mistake —
+`test_the_control_stack_does_not_swallow_the_map` is the ceiling, and it caught
+exactly that.
+
+Everything in `<style>` is written against the tokens at the top of that block
+and nothing else; `test_every_token_has_a_dark_reading` is what keeps that true,
+because a rule with a literal colour in it has no dark reading and shows up as
+one white panel in an otherwise dark app.
+
+---
+
+## Basemaps, and the two that answer the question directly
+
+The picker offers Esri World Imagery (with or without place labels),
+OpenStreetMap, and **EOX Sentinel-2 cloudless for every year 2017–2025**.
+
+Those earn their place for a reason no sub-metre survey can: they are Sentinel-2
+at 10 m — the model's own sensor at the model's own pixel — for the years being
+called. Every other imagery source in the app shows what somebody else's camera
+saw on a date somebody else chose.
+
+The **whole series**, not just the two endpoints, because dating a change is a
+separate question from calling it: stepping the basemap year by year answers
+"when did this happen" at full map scale, which the 88 px filmstrip cannot.
+`s2cloudless-YYYY` exists for 2017–2025 — **2016 does not** (404) — and the year
+list has one definition, `EOX_YEARS`, which fills both `BASES` and the
+`<select>`.
+
+**2017 is thin, and the picker says so.** Measured 2026-08-31 over the first
+twelve points of b001: EOX serve a 116-byte *blank* tile for 2017 at ten of them,
+against 4–28 KB for 2018 and 2024 at the same tile — it was their first year and
+the mosaic is partial. It is still offered, because where it exists it is the
+only 10 m look before the label window opens, but it is labelled *partial
+coverage*: a blank basemap that does not say it is blank reads as the app being
+broken, and it is the same fault as a layer with no data reading as "no
+disturbance" (T2.4). Note also that s2cloudless is **land-only**, so a water
+point is blank in every year and that is correct rather than missing. `maxzoom` is capped at 14 because 10 m *is* z14 and EOX answers above
+it only by upsampling, so MapLibre stretches locally rather than fetching tiles
+carrying no extra information.
+
+**Carto Positron was removed** on 2026-08-31 — it did not draw for the
+interpreters. Note before re-adding it: the tile URL answers `200` from outside
+a browser, so the fault is not the path and putting it back unchanged will not
+fix it.
+
+### The Google Earth link
+
+Earth carries far denser historical imagery than the Wayback archive at most
+points, so it is where a hard call actually gets resolved. The per-point **Earth**
+link now opens with the **historical imagery panel already on** and at a fixed
+eye distance, so the interpreter does not re-open the time slider a thousand
+times.
+
+That is done by constructing Earth's opaque `/data=` protobuf. The toggle turns
+out to be one point-independent field — `1.5 = {1:1, 2:{}, 3:1}`, eight bytes —
+and everything point-specific is `1.3.2`: two coordinate doubles and the literal
+`"lat,lon"` search string. Verified against a hand-captured URL: the generated
+bytes match exactly but for one ULP in the longitude double, which is Google's
+own parse of the decimal string and is about a nanometre of ground.
+
+**It degrades safely by construction.** `search/` and the `@camera` segment sit
+*outside* the blob, so if Google changes the encoding the link still lands on
+the right point at the right scale and merely loses the panel — which is the
+whole reason not to put the position in `data=` alone.
+
+One thing this cannot reach: **Settings ▸ Flight animation speed**. It is a
+client-side preference, and on the default Earth spends several seconds flying
+per point. Set it to *very fast* once, per browser. The brief says so.
+
+### The Explorer link
+
+Beside **Earth** and **Wayback** is **Explorer** —
+[jdbcode/ee-rgb-timeseries](https://github.com/jdbcode/ee-rgb-timeseries), an
+Earth Engine App that draws every Sentinel-2 scene at the point as a chip series
+plus an index plot. It is the full-resolution version of what this app's
+filmstrip and chart approximate: every scene rather than nine annual composites.
+
+Linked, not rebuilt — it runs on its author's Earth Engine quota, needs no
+sign-in from us, and §AL9 is explicit that heavy per-scene diagnostics belong
+outside the labelling loop.
+
+**The link carries the interpreter's current settings**, so arriving is a
+continuation rather than a fresh start. Parameter names and legal values are read
+off that repo's source, not guessed: `sensor`, `index` (NBR, NDVI, Blue, Green,
+Red, NIR, SWIR1, SWIR2), `rgb` (all four of our chip schemes are in its list
+verbatim), `duration`, `cloud`, `chipwidth`. It parses its own **hash**, so the
+form is `#k=v;k=v;` and not a query string. `index` has no NDMI — there is no
+moisture index on that side — so NDMI falls back to NDVI.
+
 ---
 
 ## Evidence
@@ -607,9 +895,17 @@ wrong.
 ### Sentinel-2 chips
 
 The one part that *is* live Earth Engine: a filmstrip along the bottom of the
-map, one cloud-masked growing-season composite per year, each with a red pixel
-ring painted in — without it a 10 m chip of an agricultural landscape is
-unlocatable and is worse than nothing.
+map, one cloud-masked growing-season composite per year, each carrying **two
+marks**: a red square, which is the labelling cell — the Sentinel-2 pixel, the
+same one the map outlines — and a white ring around it, which is a **locator**
+and names no ground area (it is a fixed fraction of the chip width, so ~7
+screen pixels in the strip whatever the width is set to). Without something to
+locate, a 10 m chip of an agricultural landscape is unlocatable and worse than
+nothing; without the square, the only footprint on the picture is one nothing
+measured, which is what the ring alone was — 12.8 m radius at the default
+width, growing when the width slider moved. At the strip's 176 px the cell is
+~3 px and reads as a dot inside the ring; at the lightbox's 512 px it is ~8 px
+and is plainly a square.
 
 **The vis scheme is one setting with two kinds of member**, and it drives three
 things: the chip pixels, the colour of a chip cell before its image lands, and

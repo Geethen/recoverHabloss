@@ -9,15 +9,33 @@
  * WHAT THIS FILE IS AND IS NOT. It configures a LOCAL serve. The published
  * Pages app does not read it: .github/workflows/pages.yml OVERWRITES it with
  * the LABEL_APP_CONFIG_JS Actions secret at build time, and a missing secret
- * fails the build rather than publishing an app with no backend. So a blank
- * field here is not a statement about the deployment -- ask the deployment:
+ * fails the build rather than publishing an app with no backend. So a field
+ * here is not a statement about the deployment -- ask the deployment:
  *
  *     curl '<sheetUrl>?action=ping'
  *       -> "token_required": …, "ee_service_account": …
  *
- * The Earth Engine private key is NOT here and cannot be -- see `eeAuthMode`
- * below. It lives in the Apps Script's Script Properties, server-side, and the
- * page is handed a one-hour token instead.
+ * WHY THE TWO FILLED-IN VALUES BELOW ARE COMMITTED TO A PUBLIC REPO. Neither
+ * `sheetUrl` nor `submitToken` is a secret, and they cannot be: the browser
+ * downloads this file, so anybody who opens the app already has both. Hiding
+ * them from git hides them from nobody and costs a real thing -- a dragged-in
+ * copy of app/ that does not work, and a reader who cannot tell a deployment
+ * that is unconfigured from one that is merely redacted.
+ *
+ *   - `sheetUrl` is an Apps Script /exec endpoint whose only powers are the
+ *     ones Code.gs gives it: append a label row, read this campaign's rows,
+ *     mint a one-hour read-only Earth Engine token. It is not an account and
+ *     it holds no credential.
+ *   - `submitToken` is anti-spam, not authentication. It stops somebody who
+ *     stumbles on the /exec URL from writing junk rows; it draws no line
+ *     between the two experts, and it is not meant to. Rotate it in Script
+ *     Properties and here if the sheet ever fills with noise.
+ *
+ * The thing that IS a secret is the Earth Engine private key, and it is NOT
+ * here and cannot be -- see `eeAuthMode` below. It lives in the Apps Script's
+ * Script Properties, server-side, and the page is handed a token instead. That
+ * asymmetry is the whole design: a value every browser gets may be committed,
+ * a value no browser may ever see never touches this file.
  */
 window.LABEL_APP_CONFIG = {
 
@@ -25,13 +43,13 @@ window.LABEL_APP_CONFIG = {
   // The /exec URL from Deploy > New deployment > Web app in the Sheet's Apps
   // Script editor (see apps_script/Code.gs). Empty => local-only mode: labels
   // are kept in the browser and exported with the "export" button.
-  sheetUrl: '',
+  sheetUrl: 'https://script.google.com/macros/s/AKfycbyI_77dzjFLPMOnWn_4lmd5ISYLSE70HNbVTO_nS-v8PWCSG96Fm5zmCZ4TQ0gAWrco/exec',
 
-  // Shared secret matching SUBMIT_TOKEN in apps_script/Code.gs. NOT a secret --
-  // it ships inside this file, which the browser downloads -- but it stops
-  // anyone who merely finds the /exec URL from writing rows to your sheet.
-  // Leave both sides empty to disable the check.
-  submitToken: '',
+  // Matches SUBMIT_TOKEN in apps_script/Code.gs. NOT a secret -- it ships
+  // inside this file, which the browser downloads -- but it stops anyone who
+  // merely finds the /exec URL from writing rows to your sheet. Anti-spam, not
+  // access control: see the header. Leave both sides empty to disable it.
+  submitToken: 'TRDmKIClZ7MKT0xCspjfcTVyMB8VRJpM',
 
   // ── Earth Engine ──────────────────────────────────────────────────────────
   // How the page gets an Earth Engine token.
@@ -81,7 +99,10 @@ window.LABEL_APP_CONFIG = {
   //
   // `id` is permanent and goes in the sheet; `name` is a display label and may
   // be changed at will. Never re-use an id for a different person.
-  experts: [],
+  experts: [
+    { id: 'e1', name: 'Geethen' },
+    { id: 'e2', name: 'Zander' }
+  ],
 
   // ── campaign ──────────────────────────────────────────────────────────────
   campaign: 'recover-habloss',

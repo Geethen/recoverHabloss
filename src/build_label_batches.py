@@ -64,6 +64,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import label_cell
 from project_paths import REPO_ROOT, project_data_dir
 
 BATCH_DIR = REPO_ROOT / "app" / "batches"
@@ -289,6 +290,12 @@ def to_points(frame: pd.DataFrame, channel: str | None) -> list[dict]:
                        and pd.notna(row.get("cell_km")) else 5.0,
             "meta": {k: (float(v) if isinstance(v, (int, float)) else str(v))
                      for k, v in meta.items()},
+            # THE UNIT BEING LABELLED, baked so the app draws the same square
+            # the builders reduce over. `label_cell.utm_epsg` and not the draw's
+            # own `meta.epsg`: the app computes this cell for a file dropped on
+            # the window, and two rules for one grid is the drift this bake is
+            # here to remove.
+            "cell": cell_for(float(row["lon"]), float(row["lat"])),
         }
         if "score" in frame.columns and pd.notna(row.get("score")):
             point["score"] = float(row["score"])
@@ -301,6 +308,17 @@ def to_points(frame: pd.DataFrame, channel: str | None) -> list[dict]:
                                  if column == "required_readers" else str(value))
         points.append(point)
     return points
+
+
+def cell_for(lon: float, lat: float) -> dict:
+    """The Sentinel-2 pixel this point addresses, as the app will draw it.
+
+    Trimmed to the ring and the zone: the app needs the polygon, and `x0`/`y0`
+    are recoverable from either. Read `src/label_cell.py` for why the labelling
+    unit is a pixel of the imagery grid and not a square around the point.
+    """
+    c = label_cell.cell(lon, lat)
+    return {"epsg": c["epsg"], "ring": c["ring"]}
 
 
 def cut(frame: pd.DataFrame, size: int) -> list[pd.DataFrame]:

@@ -177,10 +177,93 @@ def test_the_dense_recipe_is_the_same_recipe():
     live = _js_block("function denseFetchLive(p) {")
     assert f"'CLOUDY_PIXEL_PERCENTAGE', {D.CLOUDY_MAX}" in live
     assert f"lt({D.CLDPRB_MAX})" in live
-    assert f"buffer({D.BUFFER_M})" in live
+    # The labelling cell is the PIXEL, and the read that returns it is
+    # `reduceRegion` over the point at `SCALE_M` -- no geometry to get wrong,
+    # on either side. A buffer reappearing here is the drift.
+    assert f"reduceRegion(ee.Reducer.mean(), pt, {D.SCALE_M})" in live
+    assert "buffer(" not in live
     assert f", {D.SCALE_M})" in live
     for band in D.BANDS:
         assert f"'{band}'" in live
     assert "MSK_CLDPRB" in live and "s2cloudless" not in live.lower(), (
         "the dense series must not use the s2cloudless join -- it made a "
         "first attempt take 103 s for 269 scenes")
+
+
+def test_the_bake_versions_agree_across_the_two_languages():
+    """The builder stamps a version and the app pins one. A bump applied to
+    only one of them is silent in the worst way: every sprite and sidecar in
+    the campaign falls back to live Earth Engine, which with nobody signed in
+    is a strip of flat colour swatches -- the exact appearance of a bake that
+    was never run. The deploy workflow checks the same pair, but this is the
+    one that fails in a second rather than at deploy time."""
+    for name, module in (("CHIP_BAKE_VERSION", C), ("DENSE_BAKE_VERSION", D)):
+        assert _js_const(name).strip("'") == getattr(module, name), name
+
+
+def _stub_batch(root: Path, *, version: str, schemes: tuple[str, ...]) -> Path:
+    """A batch with sprites already on disk for each of `schemes`."""
+    points = [{"id": f"p{i:04d}", "lon": 10.0 + i, "lat": 60.0} for i in range(3)]
+    batch = {
+        "campaign": "t", "batch_id": "b999", "points": points,
+        "evidence_schema": {"timeline": {"years": [2018, 2024]}},
+        "chips": {"version": version, "dir": "b999_chips",
+                  "years": [2018, 2024], "cell": C.CELL, "width_m": 640.0,
+                  "combos": sorted(schemes), "format": "webp"},
+    }
+    for scheme in schemes:
+        d = root / "b999_chips" / C.slug(scheme)
+        d.mkdir(parents=True)
+        for p in points:
+            (d / f"{p['id']}.webp").write_bytes(b"stale")
+    path = root / "b999.json"
+    path.write_text(json.dumps(batch, indent=1))
+    return path
+
+
+def test_a_version_bump_rebakes_every_scheme_not_just_the_first(tmp_path,
+                                                               monkeypatch,
+                                                               capsys):
+    """The four schemes are baked in ONE process, and the batch is carried
+    between them so scheme two reads scheme one's cached ramp. That sharing is
+    what made this silent: scheme one's returned meta stamps
+    `batch["chips"]["version"]` with the new version, so schemes two, three and
+    four re-read it and decide their old sprites are current.
+
+    The batch then ships stamped `chip3` with three quarters of its sprites
+    drawn by `chip2` -- and the app serves them, because the stamp is the only
+    thing it can check. It is worse than no bake at all: a fallback is visible
+    (`chipBakeMiss`), this shows the interpreter the previous footprint with
+    nothing anywhere saying so. Caught on the chip2 -> chip3 re-bake of b001,
+    which had put the old red ring next to the new map cell for three of the
+    four schemes.
+
+    `--dry-run` cannot see this. It returns before the meta that carries the
+    stamp forward exists, so every scheme reads the on-disk version and the bug
+    is invisible -- which is why Earth Engine is stubbed here instead.
+    """
+    schemes = ("SWIR1/NIR/GREEN", "NIR/RED/GREEN", "RED/GREEN/BLUE")
+    path = _stub_batch(tmp_path, version="chip_old", schemes=schemes)
+
+    drawn = []
+
+    def fake_bake_one(ee, point, years, combo, width_m, cell, out, fmt,
+                      quality, stretch):
+        drawn.append((C.slug(combo), point["id"]))
+        out.write_bytes(b"fresh")
+        return out, 5
+
+    monkeypatch.setattr(C, "_ee", lambda: object())
+    monkeypatch.setattr(C, "stretches", lambda *a, **k: {})
+    monkeypatch.setattr(C, "bake_one", fake_bake_one)
+    monkeypatch.setattr(sys, "argv",
+                        ["build_batch_chips.py", "--batch", str(path),
+                         "--combo", *schemes])
+    C.main()
+
+    out = capsys.readouterr().out
+    assert capsys and out.count("-- re-baking all") == len(schemes), out
+    for scheme in schemes:
+        n = sum(1 for slug, _ in drawn if slug == C.slug(scheme))
+        assert n == 3, f"{scheme} re-baked {n}/3 points on a version bump\n{out}"
+    assert json.loads(path.read_text())["chips"]["version"] == C.CHIP_BAKE_VERSION

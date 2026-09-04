@@ -11,20 +11,30 @@ on:
     branches: [main]
     paths:
       - 'app/**'
+      - 'src/label_cell.py'
+      - 'src/label_rounds.py'
       - 'src/build_label_batches.py'
       - 'src/build_batch_chips.py'
+      - 'src/build_batch_dense.py'
       - 'src/build_batch_evidence.py'
       - 'tests/test_label_app.py'
+      - 'tests/test_label_cell.py'
+      - 'tests/test_label_rounds.py'
       - 'tests/test_chip_ramp.py'
       - 'tests/test_label_batches.py'
       - '.github/workflows/tests.yml'
   pull_request:
     paths:
       - 'app/**'
+      - 'src/label_cell.py'
+      - 'src/label_rounds.py'
       - 'src/build_label_batches.py'
       - 'src/build_batch_chips.py'
+      - 'src/build_batch_dense.py'
       - 'src/build_batch_evidence.py'
       - 'tests/test_label_app.py'
+      - 'tests/test_label_cell.py'
+      - 'tests/test_label_rounds.py'
       - 'tests/test_chip_ramp.py'
       - 'tests/test_label_batches.py'
       - '.github/workflows/tests.yml'
@@ -44,33 +54,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # This repository is PUBLIC and `app/config.js` is committed BLANK: the
-      # Pages build overwrites it from the LABEL_APP_CONFIG_JS secret, so the
-      # deployment loses nothing, while a local serve legitimately keeps the
-      # real /exec URL and submit token in that same file. One `git commit -a`
-      # is all it takes to publish them. `.githooks/pre-commit` catches that on
-      # the machine that has the values; this catches it everywhere else.
-      - name: The committed config carries no live backend values
+      # This repository is PUBLIC, and the line is drawn by one question: does
+      # every browser that opens the app already have this value?
+      #
+      # `sheetUrl` and `submitToken` do, so they are committed on purpose
+      # (2026-09-04) and this step no longer refuses them -- the page downloads
+      # config.js, the /exec endpoint has only the powers Code.gs grants it, and
+      # the token is anti-spam rather than authentication. What no browser ever
+      # sees is the Earth Engine service-account PRIVATE KEY: the SDK refuses a
+      # browser-side private key, which is why Code.gs brokers a token instead,
+      # and it must never reach a commit in any file. `.githooks/pre-commit`
+      # catches that on the machine that holds the key; this catches it
+      # everywhere else.
+      - name: No private key is committed
         run: |
           fail=0
-          for field in sheetUrl submitToken eeClientId; do
-            val=$(sed -nE "s/^[[:space:]]*$field:[[:space:]]*'(.*)',?[[:space:]]*$/\1/p" \
-                    app/config.js)
-            if [[ -n "$val" ]]; then
-              echo "::error file=app/config.js::$field is committed non-empty."
-              echo "::error::Blank it here and put the real value in the"
-              echo "::error::LABEL_APP_CONFIG_JS Actions secret instead."
-              fail=1
-            fi
-          done
           # Assembled from pieces so the pattern does not match this file.
           key_re='BEGIN [A-Z ]*PRIVATE'' KEY|"private''_key"'
           if git grep -nE "$key_re" -- \
                ':!tests/*' ':!app/apps_script/Code.gs' ':!.githooks/*' \
+               ':!.github/workflows/*' \
                >/dev/null 2>&1; then
             echo "::error::a private key is committed to this repository"
             fail=1
           fi
+          # A config that does not parse deploys as "unconfigured" rather than
+          # as broken -- the same silent failure the Pages build checks for.
+          node --check app/config.js || fail=1
           exit $fail
 
       - uses: actions/setup-python@v5
@@ -135,7 +145,13 @@ jobs:
       - name: Test
         run: |
           set -o pipefail
+          # test_label_cell.py is the guard on what a label MEANS: it runs
+          # the app's own `s2Cell()` in node against `src/label_cell.py`, and
+          # the two disagreeing means the interpreter judges one footprint
+          # while the builders reduce over another. It was written and then
+          # not listed here, which is the state the header calls a comment.
           pytest tests/test_label_app.py tests/test_chip_ramp.py \
+                 tests/test_label_cell.py tests/test_label_rounds.py \
                  tests/test_label_batches.py -q --tb=short | tee result.txt
           if grep -qE '^[0-9]+ skipped' result.txt; then
             echo "::error::every test skipped -- chromium or node did not install"

@@ -1993,6 +1993,314 @@ their end years, to be read after the call rather than before it. Pinned in
 `test_the_evidence_renders_with_earth_engine_never_signed_in`, which now asserts
 the DOM order and that the fold is shut.
 
+## AL11 — the pre-pilot pass: what a label means, and four silent losses
+
+Two reviews (an external source-and-asset read, and the user's own testing)
+landed together on 2026-08-31, days before the pilot. What follows is what
+survived checking against the code — several of the review's claims were
+correct in diagnosis and wrong in remedy, and those are recorded here because
+the remedy is the part that would have cost something.
+
+### AL11.1 — the labelling unit was never drawn, and the brief named the wrong one
+
+**This is the one that changes what a label means, and everything else in AL11
+is housekeeping beside it.**
+
+The original RECOVER sampling called each **10 m cell by majority cover**. The
+app's first-run brief said *"Judge the point, not the whole square"* — the
+opposite rule — and nothing on the map drew a 10 m footprint at all: the marker
+is a 2.6 px dot inside a 13 px halo in **screen** pixels, so it is the same size
+at every zoom and names no ground area. An interpreter cannot apply a
+majority-cover rule to a footprint they cannot see, and two interpreters each
+inventing one arrive in the data as a disagreement about the *legend* — on the
+Cropland / Nature boundary this ledger already names as the change-F1 ceiling.
+
+Three things now state the same rule and have to move together: the `cell` map
+layer, the brief, and the **dense series footprint**. That last one was the
+quiet part — the dense series read a **30 m radius circle at 20 m**, ~28× the
+area of the cell being called, so the chart that justifies a call described a
+60 m neighbourhood. A hedge, a track or a field margin *outside* the cell moved
+the line. Now `CELL_M = 10` with `buffer(5).bounds()`, mirrored in
+`denseFetchLive` and guarded by `tests/test_chip_ramp.py`; bake version
+`dense1 → dense2`, so old sidecars fall back to live rather than being served
+against the new brief.
+
+### AL11.2 — confidence is required
+
+Optional meant absent. Without it an unresolved two-expert disagreement cannot
+be told apart from an ambiguous legend, which is the input the adjudication work
+in T4.1 will need first. Affordable *only* because `1`/`2`/`3` were already
+bound and merely untaught — a mandatory field that needed the mouse would be a
+different and much worse change. Not asked on the `uninterpretable` path.
+
+### AL11.3 — four silent losses, and one review remedy worth rejecting
+
+| | what it did | fixed by |
+| --- | --- | --- |
+| **Dropping an export back in** | `adoptBatch` replaced the batch's 100 points with the 52 labelled ones. The strip lost every outstanding point, and this is the file you reach for *when sync has already failed* | branch on content; a labels CSV restores, grouped by batch, filed under the expert who made the rows |
+| **The outbox ack race** | `sendGroup` snapshotted rows, awaited, then dropped by key — deleting a correction made during the flight and marking it `_synced` | identity check: `add()` replaces the object, so `held[key] !== rec` **is** the revision test |
+| **Progress denominator** | `done / S.points.length`, so an expert who owed 52 of 100 read `52 %` at completion | `myWorkload()` counts assigned readings |
+| **"Second readings"** | claimed another expert had already called the point; nothing knows that, and on a fresh batch they have not | renamed *Independent overlap* |
+
+**The rejected remedy.** The review asked for revision IDs on the wire —
+`{key, revision}`, acknowledged and matched server-side. Unnecessary: `Outbox`
+already replaces the object at a key rather than mutating it, so object identity
+is exactly the revision check, for three lines and no change to the `Code.gs`
+contract. It also asked for **server-side rejection of unassigned points**. That
+one cannot work as described — the Apps Script has no copy of the batch file and
+never sees `required_readers`, so enforcing it means shipping assignment into
+the Sheet and keeping it in step with every batch cut; and a hard reject turns a
+legitimately reassigned point into a row the outbox retries into `rejected` and
+then abandons.
+
+### AL11.4 — the map's ⓘ did nothing, for a CSS reason worth generalising
+
+`details > summary { display: flex }` — an **element** selector, on a page that
+also contains somebody else's widget. MapLibre's compact attribution control is
+a `<details><summary>`, so the app's one-disclosure-idiom rule turned a 24×24
+absolutely-positioned icon into a flex row with a `▸` hung off the end. Scoped
+off `.maplibregl-ctrl-attrib-button` rather than out-specified: the next
+third-party `<details>` gets excluded there too.
+
+### AL11.5 — two things that make the evidence readable
+
+* **The chart dot was switched to the filmstrip's colour, and then switched
+  back.** See §AL11.8 — that one is settled by measurement, not by argument.
+* **EOX Sentinel-2 cloudless 2018 and 2024 are basemaps.** Every other imagery
+  source in the app is a different sensor at a different resolution on a date
+  somebody else chose; these two are Sentinel-2 at 10 m — the model's own sensor
+  and pixel — at exactly the two years being called. Carto Positron removed (did
+  not draw; note that its tile URL answers 200 outside a browser, so re-adding it
+  unchanged will not fix it).
+
+### AL11.6 — the Wayback fan-out
+
+One arrow press issued **~40 concurrent metadata requests**: two targets × four
+candidate releases × five resolution-band probes. The cache was written only on
+resolution, so the overlapping asks (refine, read-out, prefetch all want the
+current release) each missed and re-issued; and nothing was cancelled on point
+change — `wbSnapRefine` discarded the *result* via `gen` while the requests went
+on competing with the new point's tiles and sprites. Now: the **promise** is
+cached, concurrency is capped at 6, the candidate walk goes outward two at a
+time and stops when the nearer pair answers, and leaving a point aborts
+everything in flight for it.
+
+### AL11.6b — three things only running the app could find
+
+Everything above came out of reading source. These came out of launching it and
+looking, and none of them would have failed a test:
+
+* **The chart dots were still blue.** AL11.5 set the colour as a `fill=`
+  *presentation attribute*, and in SVG a CSS **property** always wins — so
+  `.ev-plot .ev-dot { fill: var(--accent) }` repainted all nine, every time, over
+  a correct attribute. The test asserted `getAttribute('fill')` and passed
+  throughout. Fixed by emitting an inline `style="fill:…"` (which does beat the
+  stylesheet) and by asserting `getComputedStyle`, which is the claim being made.
+  **Read the computed value whenever a test is standing in for "somebody can see
+  it".**
+* **The ⓘ had a second, independent cause.** AL11.4 fixed how it *renders*; it
+  was still dead to the mouse, because `#ev-strip` re-enables `pointer-events`
+  across the full window width to be scrollable, and the empty space to the right
+  of nine chips sat over the map's bottom-right corner. `width: fit-content`
+  (plus `max-width: 100%`, so a narrow window still scrolls) and a z-index bump
+  on MapLibre's bottom controls. Two causes, one symptom — the first fix looked
+  like it had worked because the button now *looked* right.
+* **§AL9's `.body` bug, reintroduced within the hour.** `.card label` is
+  `display: flex`, so a new checkbox written as a text node plus a `<b>` became
+  two flex items with a 7 px gap and independent wrapping — three squashed
+  columns again. **Any text put inside a flex container needs its own single
+  span.**
+
+### AL11.8 — the dot colour, settled by measurement
+
+Three positions in one day; the third has numbers behind it.
+
+| | |
+| --- | --- |
+| **AL10** | dot = the plotted index's ramp. Colour and height say the same number twice; NDVI's 0.31 cut becomes a colour boundary. |
+| **AL11.5** | dot = the chip's colour, so a dot can be matched to its filmstrip cell. Argument: saying one number twice is not worth a channel. |
+| **AL11.8** | **back to the index ramp.** |
+
+The reversal is not a change of mind about the argument. It is that a
+**false-colour mix is not the index**, and at some points it runs the other way.
+Measured over the 99 stretched points of b001 under the default
+`SWIR1/NIR/GREEN`, NDVI against perceived greenness:
+
+* **84 points positive** (median r = **+0.708**) — the common case, which is why
+  it looked right on the first point anyone opened;
+* **15 points negative**, worst p0005 (**r = −0.853**), p0056 (−0.842),
+  p0010 (−0.814), p0013 (−0.706).
+
+Red is SWIR1 in that scheme, so dry-but-vegetated ground renders brown at a high
+NDVI. Four of the first fourteen points do it. **A colour scale that reverses at
+15% of points is not a scale** — it cannot be read without first checking which
+scheme is loaded, which is the opposite of what a colour channel is for.
+Re-checked after the revert: across all 100 points there is now **no** year where
+a higher NDVI gives a lower ramp position. The cross-link AL11.5 wanted is
+genuinely lost, and that is the price.
+
+**Two traps this left in the tests, both worth more than the verdict:**
+
+1. The dot test asserted `getAttribute('fill')` and passed for weeks while every
+   dot rendered accent blue (§AL11.6b). Read `getComputedStyle` whenever a test
+   stands in for *somebody can see it*.
+2. The first monotonicity assertion measured "greener" as `G − R`, and would
+   have **failed on a correct ramp**: a bare point whose nine years all sit near
+   NDVI 0.1 is legitimately brown throughout, and inside that first ramp segment
+   red rises faster than green. p0005 and p0010 are exactly that shape. The test
+   now asserts two composable facts — each dot is `rampColor` at *its own* value,
+   and the ramp constant runs brown → green — instead of a perception heuristic
+   that has to be right about colour.
+
+Also fixed here: `EVIDENCE_BATCH` in the suite declared an NDVI series running
+0.71 → 0.26 while setting **every band to the same values**, so the real NDVI was
+0 in all nine years and every dot came out one brown. A fixture whose declared
+series and declared bands disagree cannot test a colour computed from the bands;
+`B8` is now derived from the declared NDVI.
+
+### AL11.7 — still open
+
+* **Index filmstrips are not baked.** `CHIP_INDEX` is offered in the scheme
+  picker but `build_batch_chips.COMBOS` holds only the four RGB schemes, so
+  picking NDVI/NDMI/NBR drops all nine years to live Earth Engine — AL9/AL10's
+  failure mode, still live for three of seven options. The indices derive from
+  bands the existing per-point request already fetches, so this is near-free to
+  add *during* a re-bake and a full second bake to add afterwards.
+* **The deploy workflow checks bake directories and now bake VERSIONS**
+  (§AL12: it compares each batch's declared `chips`/`dense` version against the
+  builders' constants, and the builders' against the app's — a directory that
+  exists is not a bake that is served). Still unchecked: `evidence_version`,
+  point ids, sprite combos and sidecar counts. b001 shipped as `ev1` with ESRI
+  stopping at 2023 against an `ev2` builder reaching 2025, and nothing said so.
+* **b001 carries a pre-AL12 bake.** Its `dense` sidecars are `dense2` (a
+  square centred on the point) and its sprites paint the old ring, so the app
+  falls back to live Earth Engine for the series and shows the wrong footprint
+  on the pictures until `build_batch_dense.py` and `build_batch_chips.py` are
+  re-run. Budget ~36 min per 100 points for the chips.
+* **Adjudication** (T4.1) is unchanged and still waits for a real disagreement.
+  One thing did move: `agreement()` counted only rows with a transition, so a
+  *usable vs cannot-interpret* pair was neither an agreement nor a disagreement
+  nor a doubled point — it left the denominator entirely, and it is the most
+  informative pair in the set.
+
+## AL12 — the cell is a pixel, and the app is addressable (2026-08-31)
+
+Prompted by reading `eo-timeseries-explorer.js`, the Earth Engine app this
+panel's chip strip is descended from, for anything worth porting. Almost
+nothing was — it has no cache, no prefetch, no scene cap and no bake, and the
+techniques it does have (`paint` + `blend` marker, `crs: 'EPSG:3857'`, async
+`evaluate` behind a placeholder, chart dots coloured from area-mean
+reflectance) are all already here in stronger form. Three things came out of
+it, and one of them changed what a label means for the second time in a day.
+
+### AL12.1 — the labelling unit is the SENTINEL-2 PIXEL, not a square at the point
+
+AL11.1 drew the cell for the first time and got the geometry wrong in a way
+that only shows up when you ask what the square *is*. A 10 m square **centred
+on the point** is not a pixel of anything: it straddles four Sentinel-2 pixels
+and covers no one of them. So the interpreter judged one footprint, the dense
+series read a second (the mean of up to four pixels), and the model predicts a
+third — three answers about "this cell", none of them the same ground.
+
+There is exactly one square that removes the ambiguity and it is not a choice.
+Sentinel-2 granules sit on the UTM grid of their MGRS tile with 10 m pixel
+edges on multiples of 10 m, **and so does the deployed map**:
+`oslo_s2off_centre_m3s3_bf_merged2.tif` is EPSG:32632, 10 m, origin
+589230/6652940 — both exact multiples of 10. Snapping the point's UTM
+coordinates down to a multiple of 10 therefore names the same square in the
+imagery, in the evidence and in the model's own output raster.
+
+`src/label_cell.py` is that definition and `s2Cell()` in `label_app.html` is
+the same definition in JavaScript, because the app must draw the cell for a
+batch it built (baked into the batch as `cell`, and drawn in preference to
+anything computed) *and* for a file dropped on the window. They are checked
+against each other in node in `tests/test_label_cell.py`: same zone, same
+pixel, corners within 5 cm, on 400 global points including 32V and the Svalbard
+row — **the MGRS zone exceptions are not academic here**, the study area is
+Norway and Bergen is in one of them.
+
+Four things moved together, the way AL11.1 says they must:
+
+* the `cell` map layer draws the snapped quad — the four corners transformed
+  back **one at a time**, not a lon/lat bounding box: grid convergence rotates
+  the square by up to ~3° at a zone edge, which is 0.45 m over a 10 m cell;
+* the **dense series** reads `reduceRegion` over the **point** at scale 10,
+  which is the value of the pixel containing it in the granule's own grid —
+  the pixel exactly, with no geometry to get wrong. Bake `dense2 → dense3`;
+* the **chip filmstrip** paints the cell into every cell of the sprite. What
+  was there was a red ring at `max(width_m * 0.02, 6)` m — a 12.8 m radius at
+  the default 640 m width, against a 5 m cell, and it *changed size with the
+  width slider*. It is now a white **locator** ring (a fixed fraction of the
+  width, so ~7 px in the strip at any width, and naming no ground area) with
+  the red cell square inside it. Rendered and looked at: at the strip's 176 px
+  the cell is ~3 px and reads as a dot inside the ring, at the lightbox's
+  512 px it is ~8 px and is plainly a square. Both are correct and neither is
+  the surface the call is made on — that is the map, where the cell is tens of
+  pixels across at working zoom;
+* **the marker dot is gone.** It was 2.6 screen pixels at every zoom and it was
+  the only thing on the map naming the call, so it said "judge this point" in
+  the only language a map has. What is left is the halo, faded out by zoom
+  between z15 and z17 — over exactly the zooms where the cell becomes big
+  enough to be its own marker — so at working zoom nothing but the pixel is on
+  screen. The Wayback **compare** map never drew the cell at all, which is the
+  one view where a change call is actually made.
+
+The point survives as the *address* of a pixel. Nothing should read a buffer
+around it again, and the `reduceRegion`-over-a-buffer form is now asserted
+against in `tests/test_chip_ramp.py`.
+
+Two consequences to be honest about. Sentinel-2 tiles overlap and a point in an
+overlap sits in two granules whose zones can differ — there the two candidate
+grids are rotated relative to each other and no square is "the" pixel; the MGRS
+rule picks the granule the composite is dominated by almost everywhere and is
+not worth more than that. And **b001 must be re-baked** (`chips` and `dense`),
+because its sidecars are `dense2` and its sprites carry the old ring.
+
+### AL12.2 — the scene cap was counting granules, not dates
+
+`CHIP_SCENE_CAP = 12` (AL9's largest single latency win) sorted by
+`CLOUDY_PIXEL_PERCENTAGE` and took twelve **images**. MGRS tiles overlap, so a
+point whose chip box sits in an overlap sees the same overpass as two — or, at
+a tile corner, four — granules, and spends its slots on them.
+`distinct('DATATAKE_IDENTIFIER')` between the sort and the limit — jdbcode's
+`col.distinct('date')`, which is what put the question — spends the cap on
+twelve **dates**.
+
+**Measured on b001 itself** (a global random draw, 2024, the 640 m chip box):
+**26 of 100** points span more than one MGRS tile — 2 or 4 of them — and
+**49 of 100** carry duplicate datatakes. Across those 49, 9,944 granules are
+5,472 acquisitions: they were seeing each date 1.8× over on average, and the
+worst point 1,610 → 404, a clean **4×**. A twelve-granule cap at that point was
+a median over **three dates**. This is much larger than the tile-overlap
+geometry suggests on paper, and it had been the recipe since AL9.
+
+Two things checked against the live service rather than assumed. `distinct`
+**preserves the sort**, so the granule that survives each date is still that
+date's clearest and no re-sort is needed. And the cap is not free: at p0004 the
+mean scene cloud of the chosen twelve rises **27.1% → 39.4%**, because twelve
+dates reach further down the list than six do. That is the right trade — the
+mask is per pixel and `CLOUDY_PIXEL_PERCENTAGE` is a whole-granule statistic
+only loosely related to a 640 m box, so more dates is more chances of a clear
+observation *here* — but it is a trade and not a free win. Mint and fetch of a
+two-year sprite at that point: 1.8 s and 2.0 s, inside AL9's noise.
+
+In both the app and the builder, which is the standing rule for that recipe.
+
+### AL12.3 — the view is addressable
+
+The explorer rebuilds itself entirely from `ui.url` (`lon`, `lat`, `rgb`,
+`index`, `chipwidth`). This app took `?batch=` and the config overrides and
+nothing that named a *point*. A two-expert campaign settles a disagreement by
+one person looking at what the other looked at, and the most that could be
+handed over was a batch — so `?point=p0042&scheme=NIR/SWIR1/RED&w=640` now
+opens the point, on the same imagery, under the same stretch, and `goTo` and
+`applyChipVis` rewrite it so the link to send is always the one in the address
+bar. The rest of the query string is preserved (a rewrite that dropped `batch`
+would break the link it was pasted into), a named point that is not in the
+batch resumes rather than showing nothing, and `expert` is never *added*: the
+annotation key is `(campaign, batch_id, point_id, expert_id)` and this link is
+meant to be sent to the other reader.
+
 ## Decisions this design could not make
 
 1. ~~**Is the labelling sequential or one-shot?**~~ **Settled 2026-08-25:
