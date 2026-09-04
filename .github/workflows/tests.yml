@@ -101,7 +101,13 @@ jobs:
           # baked-sprite fixture at MODULE level, so without it the file does
           # not even collect -- and the chip-bake tests it feeds are the ones
           # that catch the strip silently falling back to live Earth Engine.
-          pip install pytest pandas playwright pillow
+          #
+          # pyproj likewise: `src/label_cell.py` imports it inside `cell()` to
+          # do the lon/lat -> UTM -> lon/lat round trip that names the labelled
+          # pixel. The lazy import is what hid it -- every module still
+          # imported, so the failure landed test by test rather than at
+          # collection, and the geo env has pyproj so it passed locally.
+          pip install pytest pandas playwright pillow pyproj
           playwright install --with-deps chromium
 
       - name: Syntax-check the app's inline scripts

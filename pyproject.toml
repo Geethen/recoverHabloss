@@ -8,6 +8,10 @@ dependencies = [
     "numpy>=2.0",
     "pandas>=2.2",
     "pyarrow>=17.0",
+    # src/label_cell.py: the lon/lat -> UTM -> lon/lat round trip that names
+    # the labelled Sentinel-2 pixel. Imported inside `cell()`, so an install
+    # without it fails one call rather than one import.
+    "pyproj>=3.6",
     "pyshp>=2.3",
     "scikit-learn>=1.5",
     "scipy>=1.14",
