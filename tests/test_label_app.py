@@ -48,6 +48,11 @@ sync_api = pytest.importorskip("playwright.sync_api",
 
 APP_DIR = Path(__file__).parents[1] / "app"
 APP_HTML = APP_DIR / "label_app.html"
+#: The markup, the styles and the app are three files now. Tests that assert on
+#: what the app DOES read APP_JS; the theme test reads APP_CSS. Only the tests
+#: that assert on markup still read APP_HTML.
+APP_JS = APP_DIR / "js" / "app.js"
+APP_CSS = APP_DIR / "app.css"
 CODE_GS = APP_DIR / "apps_script" / "Code.gs"
 
 COLS = ["campaign", "batch_id", "point_id", "lon", "lat", "class_2018",
@@ -253,6 +258,20 @@ def browser():
         b.close()
 
 
+def _new_context(browser, **kw):
+    """A context that does NOT enforce the page's CSP.
+
+    Not a weakening of the app: `page.wait_for_function` polls by building a
+    function inside the page, so a real `script-src` without 'unsafe-eval'
+    stops the TEST HARNESS rather than anything a labeller does -- and adding
+    'unsafe-eval' to the app to please the harness would be the tail wagging
+    the dog. The CSP itself is exercised by
+    `test_the_page_runs_under_its_own_content_security_policy`, in a context
+    without this flag.
+    """
+    return browser.new_context(bypass_csp=True, **kw)
+
+
 CAL_BATCH = {
     "campaign": "test-campaign", "batch_id": "cal001", "channel": None,
     "calibration": True, "feedback": "immediate", "instructions": None,
@@ -322,7 +341,7 @@ def open_app(browser, base, who=None, fresh=True, batch="/batch.json",
     will accept -- the header is a roster dropdown, not a text box, precisely so
     that "Ann", "ann" and "Ann " cannot be three experts.
     """
-    ctx = browser.new_context() if fresh else browser.contexts[0]
+    ctx = _new_context(browser) if fresh else browser.contexts[0]
     if config_js is not None:
         stub_config(ctx, config_js)
     if skip_intro:
@@ -1228,7 +1247,7 @@ def test_the_lightbox_leaves_the_linked_readings_on_screen(browser, server):
     """Stepping years in the lightbox always drove the spectral profile and the
     chart; an `inset: 0` backdrop rendered that invisible."""
     base, _ = server
-    ctx = browser.new_context(viewport={"width": 1500, "height": 850})
+    ctx = _new_context(browser, viewport={"width": 1500, "height": 850})
     stub_config(ctx, FIXTURE_CONFIG)
     ctx.add_init_script(
         "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
@@ -1525,7 +1544,7 @@ def test_the_sign_in_libraries_load_before_the_click(browser, server):
     Needs network access to Google's CDNs; skips without it.
     """
     base, _ = server
-    ctx = browser.new_context()
+    ctx = _new_context(browser)
     ctx.add_init_script(
         "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
     page = ctx.new_page()
@@ -1562,7 +1581,7 @@ def test_sign_in_stops_when_only_the_project_is_missing(browser, server):
     library prefetch (which needs Google's CDN) never starts.
     """
     base, _ = server
-    ctx = browser.new_context()
+    ctx = _new_context(browser)
     ctx.add_init_script(
         "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
     stub_config(ctx)          # config.js must not supply the project either
@@ -1689,7 +1708,7 @@ def ee_page(browser, base, sheet_url="/mock", extra="", config_js=EMPTY_CONFIG):
     The block is the assertion: this path must reach Earth Engine without ever
     touching accounts.google.com, so the route records anything that tries.
     """
-    ctx = browser.new_context()
+    ctx = _new_context(browser)
     ctx.add_init_script(
         "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
     stub_config(ctx, config_js)
@@ -2548,8 +2567,8 @@ SPRITE_PNG = _sprite_png()
 def _js_const(name: str) -> str:
     """The literal a top-level `const NAME = ...;` is assigned in the app."""
     m = re.search(rf"^const {re.escape(name)} = (.+?);\s*$",
-                  APP_HTML.read_text(), re.M)
-    assert m, f"{name} not found in label_app.html"
+                  APP_JS.read_text(), re.M)
+    assert m, f"{name} not found in {APP_JS.name}"
     return m.group(1)
 
 
@@ -3012,7 +3031,7 @@ def test_wayback_is_a_basemap_and_stays_under_the_overlays(browser, server):
 def test_the_two_layer_anchors_are_used_the_right_way_round():
     """The invariant, at the two call sites, so a future insertion cannot put an
     overlay under the archive by picking the wrong constant."""
-    src = APP_HTML.read_text()
+    src = APP_JS.read_text()
     wb = src[src.index("id: WB_LAYER"):]
     assert "ANCHOR_IMAGERY" in wb[:400] and "ANCHOR_OVERLAY" not in wb[:400]
     ee = src[src.index("id: eeLayerId(), type: 'raster'"):]
@@ -3077,7 +3096,7 @@ def test_a_remembered_width_does_not_survive_into_the_next_batch(browser, server
     drops to live Earth Engine -- what it no longer does is follow the
     interpreter into the next batch."""
     base, _ = server
-    ctx = browser.new_context()
+    ctx = _new_context(browser)
     stub_config(ctx, FIXTURE_CONFIG)
     ctx.add_init_script(
         "try { localStorage.setItem('recover-labels:seen-intro','1');"
@@ -3559,9 +3578,8 @@ INHERITED_BY_DARK = {"--nature", "--cropland", "--artificial", "--brand-ramp",
 
 
 def _theme_blocks():
-    src = APP_HTML.read_text()
-    style = src[src.index("<style>"):src.index("</style>")]
-    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    # app/app.css, since the 1,144-line <style> block moved out of the page.
+    style = re.sub(r"/\*.*?\*/", "", APP_CSS.read_text(), flags=re.S)
 
     def tokens(head):
         body = style[style.index(head) + len(head):]
@@ -3612,5 +3630,35 @@ def test_the_toggle_round_trips_and_survives_a_reload(browser, server):
         assert page.locator("html").get_attribute("data-theme") is None
         assert page.evaluate(
             "localStorage.getItem('recover-labels:theme')") == "light"
+    finally:
+        ctx.close()
+
+
+def test_the_page_runs_under_its_own_content_security_policy(browser, server):
+    """The CSP in the page, enforced, against the app actually booting.
+
+    This exists because adding `script-src` broke the map and nothing said so:
+    MapLibre decodes tiles in a Web Worker created from a `blob:` URL, and
+    `script-src` alone refuses it. The map went on looking like a map -- an
+    empty one. Every other browser test in this file runs with the CSP bypassed
+    (see `_new_context`), so without this one the directive is unexercised, and
+    an unexercised CSP is a deployment that fails on somebody else's screen.
+    """
+    base, _ = server
+    ctx = browser.new_context()          # deliberately NOT _new_context
+    page = ctx.new_page()
+    blocked = []
+    page.on("console", lambda m: blocked.append(m.text[:200])
+            if "Content Security Policy" in m.text else None)
+    page.on("pageerror", lambda e: blocked.append(f"pageerror: {str(e)[:200]}"))
+    try:
+        page.goto(f"{base}/label_app.html", wait_until="load")
+        # `page.evaluate` goes through CDP and is not subject to the page's CSP;
+        # `wait_for_function` would be, which is the whole reason for the flag.
+        page.wait_for_timeout(3000)
+        assert page.evaluate("!!(window.map && map.loaded && map.loaded())"), (
+            "the map did not finish loading under the page's own CSP")
+        assert not blocked, "CSP blocked something the app needs:\n  " + \
+            "\n  ".join(blocked[:6])
     finally:
         ctx.close()

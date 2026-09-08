@@ -106,7 +106,7 @@ from build_batch_evidence import growing_season
 #: interpreter two different footprints for one call.
 CHIP_BAKE_VERSION = "chip3"
 
-#: MUST MATCH `CHIP_SCENE_CAP` in label_app.html. The cap is the measured
+#: MUST MATCH `CHIP_SCENE_CAP` in app/js/app.js. The cap is the measured
 #: difference between a 34 s filmstrip and a 5 s one (§AL9), and it costs a
 #: median 0.002 relative reflectance at the plot. The SEASON is what must not
 #: drift, and it comes from `growing_season` above -- imported, never restated.
@@ -367,8 +367,9 @@ def sprite_url(ee, point: dict, years: list[int], combo: str, width_m: float,
 def bake_one(ee, point: dict, years: list[int], combo: str, width_m: float,
              cell: int, out: Path, fmt: str, quality: int,
              stretch: dict | None = None) -> tuple[str, int]:
-    from PIL import Image
     import io
+
+    from PIL import Image
     url = sprite_url(ee, point, years, combo, width_m, cell, stretch)
     raw = urllib.request.urlopen(url, timeout=600).read()
     image = Image.open(io.BytesIO(raw)).convert("RGB")

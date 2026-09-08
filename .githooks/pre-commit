@@ -16,7 +16,15 @@
 #     is the whole reason Code.gs brokers a one-hour token -- so it must never
 #     reach a commit, in any file.
 #
-# Enable (once per clone):  git config core.hooksPath .githooks
+# HOW THIS RUNS NOW: pre-commit calls it, as the `no-private-key` hook in
+# .pre-commit-config.yaml. Enable once per clone with `uvx pre-commit install`.
+#
+# Do NOT also set `git config core.hooksPath .githooks`. It was the old way in
+# and it now BREAKS the guard rather than doubling it: git honours
+# core.hooksPath over .git/hooks, so pre-commit's hook -- the thing that calls
+# this file -- never runs, and nothing tells you. The script itself is
+# unchanged and still reads the staged diff, so it works either way when it is
+# actually invoked.
 set -u
 
 fail=0

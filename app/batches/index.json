@@ -9,8 +9,8 @@
    "stage": "teach",
    "created": "2026-09-07T11:58:46+00:00",
    "assigned": {
-    "e1": 13,
-    "e2": 13
+    "e1": 25,
+    "e2": 25
    },
    "assigned_to": "e1, e2"
   },
@@ -23,8 +23,8 @@
    "stage": "qualify",
    "created": "2026-09-07T11:58:46+00:00",
    "assigned": {
-    "e1": 13,
-    "e2": 13
+    "e1": 25,
+    "e2": 25
    },
    "assigned_to": "e1, e2"
   },
@@ -37,8 +37,8 @@
    "stage": null,
    "created": "2026-09-07T11:56:02+00:00",
    "assigned": {
-    "e1": 39,
-    "e2": 40
+    "e1": 75,
+    "e2": 75
    },
    "assigned_to": "e1, e2"
   },
@@ -51,8 +51,8 @@
    "stage": null,
    "created": "2026-09-07T11:56:02+00:00",
    "assigned": {
-    "e1": 39,
-    "e2": 40
+    "e1": 75,
+    "e2": 75
    },
    "assigned_to": "e1, e2"
   }

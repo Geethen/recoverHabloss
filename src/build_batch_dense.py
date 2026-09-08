@@ -31,7 +31,7 @@ Three things follow from baking it:
 
 THE RECIPE MUST NOT DRIFT
 -------------------------
-`series_for` below is `denseFetchLive()` in label_app.html, in Python. Same
+`series_for` below is `denseFetchLive()` in app/js/app.js, in Python. Same
 collection, same pre-filter, same mask, same cell, same scale. Two recipes for
 one line is the same hazard as `growingSeason()` one level up, and here it would
 be worse: the baked series and the live fallback would disagree for the half of
@@ -41,7 +41,7 @@ THE FOOTPRINT IS THE LABELLING CELL
 -----------------------------------
 This series read a 30 m *radius* circle at 20 m until 2026-08-31 -- roughly 28x
 the area of the thing being labelled. The call the interpreter makes is majority
-cover of the 10 m cell (see the brief in label_app.html), so a chart describing a
+cover of the 10 m cell (see the brief in app/label_app.html), so a chart describing a
 60 m neighbourhood was answering a different question from the buttons: a hedge,
 a track or a field margin outside the cell moved the line that was supposed to
 justify the call. Worse, it was invisible -- two interpreters disagreeing because
@@ -84,7 +84,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 #: Bumped when the recipe changes. MUST MATCH `DENSE_BAKE_VERSION` in
-#: label_app.html; an unknown version falls back to live Earth Engine.
+#: app/js/app.js; an unknown version falls back to live Earth Engine.
 #: `dense3` is the Sentinel-2 pixel; `dense2` was a 10 m square centred on the
 #: point (four pixels, none of them the cell) and `dense1` a 30 m circle. The
 #: bump is what stops a stale sidecar being served against the new brief -- the

@@ -1,0 +1,85 @@
+# Enable once per clone:  uvx pre-commit install
+#
+# This REPLACES `git config core.hooksPath .githooks`. Do not set both: git
+# honours `core.hooksPath` over `.git/hooks`, so with it set, pre-commit's hook
+# never runs. The private-key guard is not lost by switching -- the local hook
+# at the foot of this file calls `.githooks/pre-commit` directly, so it is the
+# same script with the same reasoning, now installed by a command instead of
+# remembered per clone.
+#
+# Everything here is scoped to what it can actually judge. ruff runs on CHANGED
+# files only, which is the whole reason a linter can be adopted at all in a
+# repository of 108 research scripts written over months: the backlog gets
+# cleaned as files are touched. There is no formatter, for either language.
+
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-json
+        # The baked batches are large but they are the app's input; a batch
+        # that does not parse is an app that loads to an error.
+        files: ^app/batches/.*\.json$
+      - id: check-toml
+      - id: check-yaml
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: debug-statements
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        # Not the baked artefacts: nothing reads their trailing bytes and
+        # rewriting them makes a 300 KB diff out of a whitespace fix.
+        exclude: ^app/(batches|vendor)/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.7
+    hooks:
+      - id: ruff-check
+        # No `--fix`: a hook that edits the file under you is a hook people
+        # learn to bypass. It reports; you fix. Rules are in pyproject.toml.
+        #
+        # `--no-cache` because this repository lives on the P: share, and ruff
+        # cannot rename its temporary cache file there -- "failed to persist
+        # temporary file: Resource temporarily unavailable (os error 11)", which
+        # it reports as the hook FAILING rather than as a slow run. Re-linting
+        # from cold costs well under a second on the files one commit touches.
+        args: [--no-fix, --no-cache]
+
+  # eslint comes from pre-commit's own managed node environment, so working on
+  # this repository still requires no package.json and no node_modules. The
+  # app is served as static files and that stays true.
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v10.10.0
+    hooks:
+      - id: eslint
+        files: ^app/.*\.js$
+        exclude: ^app/(vendor|batches)/
+        # No `globals` package: eslint.config.mjs writes the app's 25 real
+        # globals out, because a config import would have to resolve from the
+        # repository, which has no node_modules. The reasoning is in that file.
+        additional_dependencies:
+          - eslint@10.10.0
+
+  - repo: local
+    hooks:
+      # The two checks that used to run only in CI, as heredocs inside the
+      # workflow. Same script the workflow now calls.
+      - id: app-html
+        name: label_app.html parses and has no inline handlers
+        entry: python3 tools/check_app_html.py
+        language: system
+        pass_filenames: false
+        files: ^app/label_app\.html$
+
+      # The guard on what must never reach this PUBLIC repository: the Earth
+      # Engine service-account private key. The script is unchanged and still
+      # reads the staged diff itself, so it takes no filenames.
+      - id: no-private-key
+        name: no private key in the staged diff
+        entry: .githooks/pre-commit
+        language: script
+        pass_filenames: false
+        always_run: true

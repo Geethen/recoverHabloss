@@ -23,7 +23,7 @@ buffer around it again.
 
 THIS DEFINITION IS MIRRORED IN JAVASCRIPT
 -----------------------------------------
-``s2Cell()`` in ``app/label_app.html`` is this file, in JS, because the app must
+``s2Cell()`` in ``app/js/cell.js`` is this file, in JS, because the app must
 draw the cell for a batch it built itself (baked, below) *and* for a file
 dropped on the window (computed). ``tests/test_label_cell.py`` runs the JS in
 node against this module: same zone, same snap, corners inside a centimetre.

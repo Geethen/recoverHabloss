@@ -7,12 +7,29 @@ sign-in for auxiliary layers.
 
 ```
 app/
-  label_app.html        the whole app, one file
+  label_app.html        the page: markup, and the tags that load the rest
+  app.css               the styles
+  js/boot.js            theme, the MapLibre fallback, and loading config.js
+  js/cell.js            the labelled pixel — pairs with src/label_cell.py
+  js/chips.js           the vis scheme and display ramp — pairs with src/build_batch_chips.py
+  js/app.js             everything else
+  js/globals.d.ts       declarations, so `// @ts-check` works in an editor
   config.js             your deployment's URLs and expert roster — edit this, not the app
   vendor/               MapLibre, self-hosted (see "Vendored MapLibre" below)
   batches/              batch JSON + index.json (written by build_label_batches.py)
   apps_script/Code.gs   paste into the Sheet's Apps Script editor
 ```
+
+Still a folder you upload: these are plain `<script>` and `<link>` tags, there
+is no build step and no `node_modules`, and the four files under `js/` share
+one global scope exactly as the single inline block they came from did. Load order
+is fixed in `label_app.html` and `js/app.js` must stay last -- it is the only
+one with statements that run at load.
+
+`js/cell.js` and `js/chips.js` are split out rather than left in `js/app.js`
+because each has a counterpart in Python that must not drift from it, and each
+is loaded whole -- `require()`d, not pattern-matched -- by the test that holds
+them to it (`tests/test_label_cell.py`, `tests/test_chip_ramp.py`).
 
 Related code:
 
@@ -714,7 +731,7 @@ hold nine years of evidence is a different mistake —
 `test_the_control_stack_does_not_swallow_the_map` is the ceiling, and it caught
 exactly that.
 
-Everything in `<style>` is written against the tokens at the top of that block
+Everything in `app.css` is written against the tokens at the top of that file
 and nothing else; `test_every_token_has_a_dark_reading` is what keeps that true,
 because a rule with a literal colour in it has no dark reading and shows up as
 one white panel in an otherwise dark app.

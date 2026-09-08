@@ -52,7 +52,8 @@
    "reference": "Cropland -> Nature",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -239,7 +240,8 @@
    "reference": "Nature -> Artificial",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -426,7 +428,8 @@
    "reference": "Artificial -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -613,7 +616,8 @@
    "reference": "Cropland -> Artificial",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -988,7 +992,8 @@
    "reference": "Artificial -> Cropland",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -1175,7 +1180,8 @@
    "reference": "Nature -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -1362,7 +1368,8 @@
    "reference": "Artificial -> Artificial",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -1549,7 +1556,8 @@
    "reference": "Cropland -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -1736,7 +1744,8 @@
    "reference": "Cropland -> Cropland",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -1923,7 +1932,8 @@
    "reference": "Cropland -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -2110,7 +2120,8 @@
    "reference": "Cropland -> Artificial",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -2297,7 +2308,8 @@
    "reference": "Nature -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -2484,7 +2496,8 @@
    "reference": "Cropland -> Cropland",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -2671,7 +2684,8 @@
    "reference": "Artificial -> Artificial",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -2858,7 +2872,8 @@
    "reference": "Nature -> Nature",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -3045,7 +3060,8 @@
    "reference": "Nature -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -3232,7 +3248,8 @@
    "reference": "Nature -> Cropland",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -3419,7 +3436,8 @@
    "reference": "Cropland -> Artificial",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -3605,7 +3623,8 @@
    "reference": "Cropland -> Nature",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -3791,7 +3810,8 @@
    "reference": "Nature -> Artificial",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -3978,7 +3998,8 @@
    "reference": "Artificial -> Nature",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -4165,7 +4186,8 @@
    "reference": "Cropland -> Cropland",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -4352,7 +4374,8 @@
    "reference": "Nature -> Nature",
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -4539,7 +4562,8 @@
    "reference": "Artificial -> Nature",
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {

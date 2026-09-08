@@ -53,7 +53,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -241,7 +242,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -429,7 +431,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -617,7 +620,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -805,7 +809,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -993,7 +998,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -1181,7 +1187,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -1369,7 +1376,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -1746,7 +1754,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -1934,7 +1943,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -2122,7 +2132,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -2310,7 +2321,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -2498,7 +2510,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -2686,7 +2699,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -2874,7 +2888,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -3062,7 +3077,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -3439,7 +3455,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -3627,7 +3644,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -3815,7 +3833,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -4003,7 +4022,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -4191,7 +4211,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -4379,7 +4400,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -4567,7 +4589,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -4755,7 +4778,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -4943,7 +4967,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -5131,7 +5156,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -5319,7 +5345,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -5507,7 +5534,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -5695,7 +5723,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -5883,7 +5912,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -6260,7 +6290,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -6448,7 +6479,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -6636,7 +6668,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -6824,7 +6857,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -7012,7 +7046,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -7200,7 +7235,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -7388,7 +7424,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -7576,7 +7613,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -7764,7 +7802,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -7952,7 +7991,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -8140,7 +8180,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -8328,7 +8369,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -8516,7 +8558,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -8704,7 +8747,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -8892,7 +8936,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -9080,7 +9125,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -9268,7 +9314,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -9456,7 +9503,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -9644,7 +9692,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -9832,7 +9881,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -10020,7 +10070,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -10208,7 +10259,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -10396,7 +10448,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -10584,7 +10637,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -10772,7 +10826,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -10960,7 +11015,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -11148,7 +11204,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -11336,7 +11393,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -11524,7 +11582,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -11712,7 +11771,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -11900,7 +11960,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -12088,7 +12149,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -12276,7 +12338,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -12464,7 +12527,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -12652,7 +12716,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -12840,7 +12905,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -13028,7 +13094,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -13216,7 +13283,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {
@@ -13404,7 +13472,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -13781,7 +13850,8 @@
    },
    "primary_expert": "e2",
    "required_readers": [
-    "e2"
+    "e2",
+    "e1"
    ],
    "evidence": {
     "v": {
@@ -13969,7 +14039,8 @@
    },
    "primary_expert": "e1",
    "required_readers": [
-    "e1"
+    "e1",
+    "e2"
    ],
    "evidence": {
     "v": {

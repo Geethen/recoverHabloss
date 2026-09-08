@@ -277,7 +277,10 @@ def print_confusion(name: str, table: pd.DataFrame, scores: dict,
     print("  per-class F1: " + "  ".join(
         f"{s}={scores[f'f1_{s}']:.4f}" for s in table.index))
     header = "".join(f"{c[:9]:>11s}" for c in table.columns)
-    print(f"  {'truth \\ pred':<14s}{header}{'recall':>11s}")
+    # Hoisted out of the f-string: a backslash inside a replacement field is
+    # only legal from Python 3.12 (PEP 701), and this project supports 3.11.
+    corner = "truth \\ pred"
+    print(f"  {corner:<14s}{header}{'recall':>11s}")
     for state in table.index:
         cells = "".join(f"{table.loc[state, c]:>6,d}{rates.loc[state, c]:>5.0%}"
                         for c in table.columns)

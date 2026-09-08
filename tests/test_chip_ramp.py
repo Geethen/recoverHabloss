@@ -8,7 +8,7 @@ still appears, it is just a different picture from the colour behind it.
 
 So this does not re-implement the JavaScript in Python -- §AL8's lesson is that
 a Python double polices a contract the JavaScript may not have signed. It runs
-the app's own function, extracted from `label_app.html`, in node.
+the app's own function, loaded from `app/js/chips.js`, in node.
 
 Skips cleanly where there is no node, so `pytest -q` stays green on a bare
 checkout.
@@ -26,11 +26,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[1]
-APP = ROOT / "app" / "label_app.html"
+#: The app's JavaScript, now a file rather than a <script> block in the page.
+#: Text assertions below still read it; the ramp itself is loaded, not read.
+APP = ROOT / "app" / "js" / "app.js"
+CHIPS_JS = ROOT / "app" / "js" / "chips.js"
 sys.path.insert(0, str(ROOT / "src"))
 
-import build_batch_chips as C          # noqa: E402
-import build_batch_dense as D          # noqa: E402
+import build_batch_chips as C  # noqa: E402
+import build_batch_dense as D  # noqa: E402
 
 NODE = shutil.which("node") or shutil.which("nodejs")
 
@@ -39,7 +42,7 @@ def _js_const(name: str) -> str:
     """The literal a top-level `const NAME = ...;` is assigned."""
     m = re.search(rf"^const {re.escape(name)} = (.+?);\s*$",
                   APP.read_text(), re.M)
-    assert m, f"{name} not found in label_app.html"
+    assert m, f"{name} not found in {APP.name}"
     return m.group(1)
 
 
@@ -56,6 +59,21 @@ def _js_block(start: str) -> str:
     m = re.compile(r"^\};?$", re.M).search(text, i)
     assert m, f"no closing brace for {start!r}"
     return text[i:m.end()]
+
+
+def _chips_json(expr: str):
+    """Evaluate `expr` against the real app/js/chips.js in node, as JSON.
+
+    The point of going through node rather than a regex is that a typo in the
+    combo table is then a failure here, not a table that still "contains the
+    string" and no longer parses.
+    """
+    code = ("const C = require(" + json.dumps(str(CHIPS_JS)) + ");"
+            "console.log(JSON.stringify(" + expr + "));")
+    run = subprocess.run([NODE, "-e", code], capture_output=True, text=True,
+                         check=False)
+    assert run.returncode == 0, run.stderr.strip()[:2000]
+    return json.loads(run.stdout)
 
 
 def test_the_bake_version_the_app_looks_for_is_the_one_the_baker_writes():
@@ -102,17 +120,19 @@ def test_the_fallback_says_which_condition_it_failed():
     assert "chipBakeMiss(p)" in _js_block("function liveChips(p, years, gen, why) {")
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
 def test_the_min_span_guard_is_the_same_number_on_both_sides():
-    assert float(_js_const("STRETCH_MIN_SPAN")) == C.STRETCH_MIN_SPAN
+    assert _chips_json("C.STRETCH_MIN_SPAN") == C.STRETCH_MIN_SPAN
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
 def test_the_app_and_the_baker_agree_on_the_combos_they_can_bake():
     """A scheme the app thinks is baked and the baker never renders is a 404
     per point, which degrades to live Earth Engine -- silently, and only for
     whoever picked that scheme."""
-    rgb = _js_block("const CHIP_RGB = {")
+    rgb = _chips_json("Object.keys(C.CHIP_RGB)")
     for combo in C.COMBOS:
-        assert f"'{combo}'" in rgb, f"{combo} is bakeable but not in CHIP_RGB"
+        assert combo in rgb, f"{combo} is bakeable but not in CHIP_RGB"
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")
@@ -120,19 +140,20 @@ def test_the_two_ramps_are_the_same_ramp():
     """`combo_bounds` (Python, bakes the sprite) against `comboBounds`
     (JavaScript, paints the tint and drives the live request), on random
     stretch tables including the degenerate ones the guard exists for."""
+    # The real file, loaded whole. This used to be nine regex slices of the
+    # page pasted together with stubs -- which meant the thing under test was
+    # a reconstruction, and a reindent could change what got reconstructed.
+    #
+    # `chipStretch` is the one seam: it reads `S.batch` and `chipVis`, so it
+    # stays in app.js and chips.js calls it as a free global. Assigning it on
+    # `global` here is what the browser does by having both files in one scope.
     src = "\n".join([
-        _js_block("const CHIP_RGB = {"),
-        _js_block("const CHIP_INDEX = {"),
-        "const STRETCH_MIN_SPAN = " + _js_const("STRETCH_MIN_SPAN") + ";",
-        "function chipIsIndex(c) { return c in CHIP_INDEX; }",
-        _js_block("function chipSpec(combo) {"),
-        # The app reads the table off S.batch; the test hands it in directly.
+        "const C = require(" + json.dumps(str(CHIPS_JS)) + ");",
         "let STRETCH = null;",
-        "function chipStretch() { return STRETCH; }",
-        _js_block("function comboBounds(p, combo) {"),
+        "global.chipStretch = () => STRETCH;",
         "const cases = JSON.parse(process.argv[2]);",
         "const out = cases.map(c => { STRETCH = c.stretch;",
-        "  const b = comboBounds({}, c.combo);",
+        "  const b = C.comboBounds({}, c.combo);",
         "  return [b.min, b.max]; });",
         "console.log(JSON.stringify(out));",
     ])
@@ -154,7 +175,7 @@ def test_the_two_ramps_are_the_same_ramp():
                                      round(lo + rng.choice([2, 40, 300, 3000]), 1)]
         cases.append({"combo": combo, "stretch": stretch})
 
-    script = Path(__file__).parent / "_ramp.mjs"
+    script = Path(__file__).parent / "_ramp.cjs"
     script.write_text(src)
     try:
         got = json.loads(subprocess.run(

@@ -1,7 +1,7 @@
 """The labelling cell, and the two places it is written down.
 
 `src/label_cell.py` bakes the cell into the batch and reduces over it; `s2Cell`
-in `label_app.html` draws it, and computes it outright for a file dropped on the
+in `app/js/cell.js` draws it, and computes it outright for a file dropped on the
 window. §AL8's rule applies: a Python double cannot police a contract the
 JavaScript disagrees with, so this runs the app's own functions in node against
 pyproj — not against a re-implementation.
@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import math
 import random
-import re
 import shutil
 import subprocess
 import sys
@@ -27,33 +26,16 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).parents[1]
-APP = ROOT / "app" / "label_app.html"
+#: The app's own file, loaded whole. This used to be `app/label_app.html` with
+#: the functions cut back out of it by regular expression -- see the header of
+#: app/js/cell.js for why that was worth ending.
+CELL_JS = ROOT / "app" / "js" / "cell.js"
 sys.path.insert(0, str(ROOT / "src"))
 
-import label_cell as LC                                        # noqa: E402
+import label_cell as LC  # noqa: E402
 
 NODE = shutil.which("node") or shutil.which("nodejs")
 pyproj = pytest.importorskip("pyproj")
-
-
-def _js_span(start: str, end: str) -> str:
-    """Source from the line starting with `start` through the line ending `end`.
-
-    The ellipsoid constants are three plain `const` lines; there is no brace to
-    stop at and they are what the transforms are.
-    """
-    text = APP.read_text()
-    i = text.index(start)
-    j = text.index(end, i) + len(end)
-    return text[i:j]
-
-
-def _js_block(start: str) -> str:
-    text = APP.read_text()
-    i = text.index(start)
-    m = re.compile(r"^\};?$", re.M).search(text, i)
-    assert m, f"no closing brace for {start!r}"
-    return text[i:m.end()]
 
 
 #: Places chosen for the things that break a zone rule, not for coverage:
@@ -80,17 +62,26 @@ PLACES = [
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_the_labelled_pixel_is_the_same_size_in_both_languages():
+    """The one number the paste-up used to supply from the Python side, so it
+    could not disagree. It can now, so check it."""
+    run = subprocess.run(
+        [NODE, "-e", "console.log(require(" + json.dumps(str(CELL_JS))
+         + ").LABEL_CELL_M)"], capture_output=True, text=True, check=False)
+    assert run.returncode == 0, run.stderr.strip()[:2000]
+    assert int(run.stdout.strip()) == int(LC.CELL_M)
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
 def test_the_cell_is_one_pixel_in_both_languages():
+    # The app's file, whole, rather than a paste-up of slices of it. The old
+    # version also DEFINED `LABEL_CELL_M` from the Python side before pasting,
+    # which quietly made the two agree about the one number they most need to
+    # be checked on; it is asserted below instead.
     src = "\n".join([
-        "const LABEL_CELL_M = " + str(int(LC.CELL_M)) + ";",
-        _js_span("const WGS_A =", "DEG = Math.PI / 180;"),
-        _js_block("function utmEpsg(lon, lat) {"),
-        _js_block("function utmLon0(epsg) {"),
-        _js_block("function utmForward(lon, lat, epsg) {"),
-        _js_block("function utmInverse(x, y, epsg) {"),
-        _js_block("function s2Cell(lon, lat, epsg) {"),
+        "const C = require(" + json.dumps(str(CELL_JS)) + ");",
         "const pts = JSON.parse(process.argv[2]);",
-        "console.log(JSON.stringify(pts.map(p => s2Cell(p[0], p[1]))));",
+        "console.log(JSON.stringify(pts.map(p => C.s2Cell(p[0], p[1]))));",
     ])
 
     rng = random.Random(20260831)
@@ -100,7 +91,7 @@ def test_the_cell_is_one_pixel_in_both_languages():
                     round(rng.uniform(-80, 84), 6)])
     pts = [list(p) for p in pts]
 
-    script = Path(__file__).parent / "_cell.mjs"
+    script = Path(__file__).parent / "_cell.cjs"
     script.write_text(src)
     try:
         run = subprocess.run([NODE, str(script), json.dumps(pts)],

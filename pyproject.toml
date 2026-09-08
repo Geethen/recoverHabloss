@@ -19,7 +19,70 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+# `app-tests` is what .github/workflows/tests.yml installs, and it is a group
+# rather than a lean on `[project.dependencies]` on purpose: the app suite is
+# scoped to the modules that need no scientific stack, so it installs in under
+# a minute, and that only holds if CI can sync it WITHOUT the project. It does
+# that with `uv sync --only-group app-tests`, which installs neither this
+# project nor its dependencies -- so every import the suite makes has to be
+# named right here.
+#
+# The workflow used to `pip install` this list by hand, unpinned and out of
+# step with the lockfile. Both of the packages that are also project
+# dependencies are here because leaving them to that hand-written list already
+# cost a debugging round:
+#   pillow -- tests/test_label_app.py builds its baked-sprite fixture at MODULE
+#             level, so without it the file does not collect at all, and the
+#             chip-bake tests that catch the strip falling back to live Earth
+#             Engine never run;
+#   pyproj -- src/label_cell.py imports it inside `cell()`, so the failure
+#             landed test by test rather than at collection, and passed
+#             locally because the geo env has it.
+app-tests = [
+    "pytest>=8.0",
+    "playwright>=1.47",
+    "pillow>=10.4",
+    "pandas>=2.2",
+    "pyproj>=3.6",
+]
+dev = [{include-group = "app-tests"}]
+
+[tool.ruff]
+# `scratchpad/` is working material, not code anybody maintains.
+extend-exclude = ["scratchpad"]
+
+[tool.ruff.lint]
+# Correctness rules only, and deliberately NOT the style ones. This repository
+# is 108 Python files written over months of research; selecting E501/Q000/
+# COM812 lights up ~1,300 findings that say nothing about whether the code is
+# right, and `ruff format` would rewrite nearly all of it in one unreviewable
+# commit. The compact `if x: return` / `a = 1; b = 2` style that E701/E702
+# object to is deliberate and reads well in the numeric code.
+#
+# What IS selected either finds bugs or is mechanically safe:
+#   F     -- pyflakes: undefined names, unused imports and variables. This is
+#            the one that pays for itself; see E9 below.
+#   E4/E9 -- import placement and, more to the point, syntax errors.
+#   I     -- import sorting, entirely auto-fixable.
+#   B     -- bugbear, minus B905: `zip(strict=)` is a real check but 45 call
+#            sites of churn on numeric code that is already covered by tests.
+#   LOG   -- logging misuse.
+#
+# E9 earned its place immediately: it found `src/statepre/run.py:280` using a
+# backslash inside an f-string expression, which is a SYNTAX ERROR on Python
+# 3.11 -- the floor this project declares in `requires-python`. It parses on
+# 3.12, which is why nobody saw it.
+#
+# Enforcement is `pre-commit`, which runs ruff over CHANGED files only, so the
+# existing backlog (39 unused imports, 64 unsorted import blocks, 12 others)
+# gets cleaned as files are touched rather than in one sweep. There is
+# deliberately no repo-wide ruff gate in CI yet: it would be red on day one.
+select = ["F", "E4", "E9", "I", "B", "LOG"]
+ignore = ["B905"]
+
+[tool.ruff.lint.per-file-ignores]
+# The suite is built out of asserts and long fixture literals.
+"tests/*" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

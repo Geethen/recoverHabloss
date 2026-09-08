@@ -129,7 +129,8 @@ jobs:
                   ("chips", "src/build_batch_chips.py", "CHIP_BAKE_VERSION"),
                   ("dense", "src/build_batch_dense.py", "DENSE_BAKE_VERSION")):
               builder = const(src, name, PY_CONST)
-              app = const("app/label_app.html", name, JS_CONST)
+              # app/js/app.js since the app moved out of the page.
+              app = const("app/js/app.js", name, JS_CONST)
               if builder != app:
                   print(f"::error::{name} is {builder!r} in {src} and {app!r} in "
                         f"the app -- every bake would fall back")

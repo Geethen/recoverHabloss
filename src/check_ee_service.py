@@ -60,7 +60,7 @@ def say(state: str, label: str, detail: str = "") -> None:
 
 
 def advice(msg: str) -> str:
-    """The terminal half of `eeFailureAdvice` in `label_app.html`.
+    """The terminal half of `eeFailureAdvice` in `app/js/app.js`.
 
     Kept in step with it deliberately: a labeller reading the panel and the
     person reading this should be told the same thing about the same 403.
@@ -318,7 +318,7 @@ def step_real_layer(tok: dict, lon: float, lat: float, km: float) -> bool | None
     @return None when the `ee` client is not importable, which is a skip.
     """
     try:
-        import ee                                   # noqa: PLC0415 - optional
+        import ee  # noqa: PLC0415 - optional
         from google.oauth2.credentials import Credentials  # noqa: PLC0415
     except ImportError:
         say(INFO, "a real overlay renders (dw24)",
