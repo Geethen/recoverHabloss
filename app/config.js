@@ -100,8 +100,8 @@ window.LABEL_APP_CONFIG = {
   // `id` is permanent and goes in the sheet; `name` is a display label and may
   // be changed at will. Never re-use an id for a different person.
   experts: [
-    { id: 'e1', name: 'Geethen' },
-    { id: 'e2', name: 'Zander' }
+    { id: 'e1', name: 'Dina' },
+    { id: 'e2', name: 'Øyvind' }
   ],
 
   // ── campaign ──────────────────────────────────────────────────────────────
