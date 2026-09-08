@@ -102,6 +102,27 @@ FIRST_CLASS = ("id", "lon", "lat", "channel", "rank", "score", "cell_km",
 #: neither is visible until the round report.
 DEFAULT_DOUBLE_FRAC = 0.05
 
+#: Columns that must never reach ``meta``, because ``meta`` renders in the panel
+#: **before** the interpreter calls the point. ``rank`` and ``score`` are already
+#: held back for this reason -- "rank 1, uncertainty" says the model finds this
+#: hard before anyone has looked -- and these are the same failure wearing a
+#: different column name.
+#:
+#: ``pred_class`` is the worst of them: it is the model's answer, and a candidate
+#: table built by a retrieval channel carries it as the stratification label. It
+#: is not lost by being dropped here -- it stays in the candidate CSV, and the
+#: round report joins back to it on ``id`` to compute the per-class confirm rate,
+#: which is the only thing it is needed for.
+#:
+#: The rule to apply when adding to this list: would seeing this value change
+#: what a careful reader calls the point? A terrain fact (slope, WorldCover,
+#: water occurrence) is context and belongs in the panel. A model output is an
+#: anchor and does not.
+ANCHOR_COLUMNS = frozenset({
+    "pred_class", "predicted", "yhat", "model_class",
+    "novelty", "similarity", "entropy", "uncertainty", "acquisition",
+})
+
 #: The three acquisition channels the ledger recognises, and what each is bought
 #: on. Used only to validate ``--channel`` and to stamp the batch.
 #: What each calibration stage is for, in the words the interpreter reads when
@@ -273,7 +294,8 @@ def to_points(frame: pd.DataFrame, channel: str | None) -> list[dict]:
     rendered next to the buttons, and a calibration answer shown before the call
     measures nothing.
     """
-    extra = [c for c in frame.columns if c not in FIRST_CLASS]
+    extra = [c for c in frame.columns if c not in FIRST_CLASS
+             and c not in ANCHOR_COLUMNS]
     points = []
     for rank, (_, row) in enumerate(frame.iterrows(), start=1):
         meta = {c: row[c] for c in extra
@@ -400,8 +422,35 @@ def write_manifest(entries: list[dict], outdir: Path, *, merge: bool) -> None:
             existing = []
     new_ids = {e["batch_id"] for e in entries}
     kept = [e for e in existing if e.get("batch_id") not in new_ids]
-    path.write_text(json.dumps({"batches": kept + entries}, indent=1))
+    path.write_text(json.dumps({"batches": manifest_order(kept + entries)},
+                               indent=1))
     print(f"  {show(path)}  {len(kept) + len(entries)} batches")
+
+
+def manifest_order(entries: list[dict]) -> list[dict]:
+    """Calibration first, `teach` before `qualify`, then the rest as built.
+
+    The app fills its batch picker straight from this list and the first entry
+    is what a labeller opens on -- there is no sort in `app/js/app.js` and
+    nothing gates a real batch behind a calibration one. Appending in build
+    order therefore puts the calibration batches LAST, which quietly inverts the
+    one sequencing rule the campaign has: calibration comes before any real
+    labelling, or two people label to two standards and the agreement number is
+    measured over nothing (AL8).
+
+    Ordering here rather than in the app because the manifest is the thing a
+    person can read and check.
+    """
+    stage_rank = {"teach": 0, "qualify": 1}
+
+    def key(entry: dict) -> tuple:
+        if entry.get("calibration"):
+            return (0, stage_rank.get(entry.get("stage"), 2))
+        return (1, 0)
+
+    # `sorted` is stable, so non-calibration batches keep the order they were
+    # built in and an interpreter part-way through one does not see it move.
+    return sorted(entries, key=key)
 
 
 # ---------------------------------------------------------------------------

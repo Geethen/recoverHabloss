@@ -2301,6 +2301,116 @@ batch resumes rather than showing nothing, and `expert` is never *added*: the
 annotation key is `(campaign, batch_id, point_id, expert_id)` and this link is
 meant to be sent to the other reader.
 
+## Round one, built (2026-08-25)
+
+The first real draw, and the point at which AL0-AL6 stop being a ledger entry
+and start deciding what 150 points are spent on. Five batches in
+`app/batches/index.json`:
+
+| batch | n | channel | what it is bought on |
+| --- | ---: | --- | --- |
+| `cal_teach001` | 25 | calibration, answers shown | nothing -- it is the briefing |
+| `cal_qualify001` | 25 | calibration, answers withheld | per-expert agreement **with the confusion pairs** |
+| `cov001` | 75 | coverage | `natStab_as_art` **and** `natStab_as_crop` |
+| `rar001` | 75 | retrieval | confirmed plots per point, **per class** |
+| `b001` | 100 | equal-area (already existed) | the control the other two must beat |
+
+**They are separate batches on purpose.** A movement in `natStab_as_art` cannot
+be attributed to the coverage points if the same batch also carried retrieval
+points, and AL1 says those two channels move that metric in opposite directions
+(`novelty` -0.020, `proto_sim` -0.003 at a -0.046 change-F1 cost). One mixed
+batch of 150 would have been unreadable.
+
+**`b001` is the control and was not redrawn.** It is the 100-patch equal-area
+pilot draw, from the same frame as the coverage candidates
+(`global_patches.py`: uniform in longitude and in sin(latitude)), which is what
+makes the >=2x falsification test in the evaluation section computable. Its
+`instructions` string still calls it a demo -- that wording predates this round
+and should be corrected before it is worked, not the points redrawn.
+
+### `cov001` -- how the 75 were chosen
+
+`src/build_coverage_candidates.py`. 40,000 equal-area points -> 10,013 on land in
+an under-sampled stratum -> 3,253 sampled for AlphaEarth -> 75.
+
+Allocation is **deficit x stable-class confusion rate**, and both factors are
+load-bearing. Deficit alone spends 25 of 75 on forest, which is a real coverage
+gap (34.6% of land against 24.4% of labels) but ground the model already reads at
+88%. The error factor is deliberately **not** the overall error rate: overall
+error on `grass` and `crop` is dominated by the Cropland/Nature boundary, which
+the ledger calls a label-noise ceiling, so weighting by it buys more argument
+rather than more signal -- the failure BALD exists to avoid. What is counted is
+*truth stable, prediction a different stable class*: the family the user sees on
+the map and the family no aggregate can see.
+
+    bare 27 | tree 21 | shrub 11 | grass 7 | snow/ice 6 | wetland 2 | moss 1
+
+Within each stratum the ordering is `novelty` -- cosine distance to the nearest
+already-labelled plot in AlphaEarth state space, the exact AL3 arm -- thinned at
+25 km so two points are not one observation.
+
+**Vendi check: 26.4 effective distinct places against 18.9 for a same-size
+random draw from the same pool.** That is the evaluation section's one
+no-labels quality test, and it is a necessary condition rather than a sufficient
+one: it says the batch has not collapsed onto one kind of terrain, not that the
+terrain is useful.
+
+### `rar001` -- and the one thing in it that needs stating
+
+`src/build_rare_class_candidates.py`. Weighted toward **scarcity**, not toward
+the sizing target: "double every change class" implies new plots proportional to
+*current* counts, which hands the largest share to the most abundant change class
+and the smallest to the one with 46 plots.
+
+| class | held | drawn | distinct patches |
+| --- | ---: | ---: | ---: |
+| `Artificial -> Cropland` | 46 | **20** | 11 |
+| `Cropland -> Nature` | 114 | **20** | 14 |
+| `Artificial -> Nature` | 123 | 15 | 11 |
+| `Cropland -> Artificial` | 333 | 10 | 8 |
+| `Nature -> Cropland` | 243 | 10 | 8 |
+| `Nature -> Artificial` | 383 | 0 | -- (`b001` returns it at the base rate) |
+
+No fragments: every point sits in >= 1 ha of its class.
+
+**The `Artificial -> Cropland` points come from `siam_s2off_state_pre`, not from
+the deployed model.** On the identical 100 patches the deployed model returns
+**0** patches holding a labellable hectare of that class on either of its layers;
+the state-pretrained siamese returns **12** on its `coarse3_gated` layer. That is
+`STATE_PRETRAIN_RESEARCH.md`'s "breaks Art->Crop 0.000 -> 0.19" showing up as a
+search tool. It does **not** re-open the deployed model: a candidate generator is
+not a product, nothing here is mapped or shipped, and the human labelling the
+point is free to overrule it -- which for a 46-plot class is the expected outcome
+most of the time. Using the deployed model here would have returned zero
+candidates for the class that most needs them.
+
+`PATCH_SAMPLING.md` section C names the confirm rate of the change-restricted
+channel as the one number the plan is missing. 40 of these 75 points are on the
+two classes the deployed map cannot reach, so this batch measures it as a
+by-product of labelling that was going to happen anyway.
+
+### Calibration, and what it can and cannot measure
+
+`src/build_calibration_candidates.py` draws from plots that already carry a
+RECOVER transition, weighted by `1/sqrt(class count)` x a stratum weight that
+triples `grass`, `crop`, `bare` and `wetland` and doubles seasonal water
+(5-20% JRC occurrence). A calibration set stratified by frequency is mostly
+stable Nature, which teaches nothing and measures nothing -- everyone agrees on
+closed forest. All nine classes appear in both stages, and the two stages share
+no plot: a point seen with its answer in `teach` and scored in `qualify` measures
+memory, not agreement.
+
+Two limits, stated because they change how the number should be read:
+
+* **The reference is one prior reading, not an adjudicated panel.** A
+  disagreement against it is evidence of a *difference*, not proof the
+  interpreter is wrong. AL8's rule stands: read the confusion pairs, per expert,
+  not the headline percentage.
+* **`qualify` withholds the answer in the UI, not on the wire.** The batch JSON
+  the browser downloads carries `reference`, because hosting is static and there
+  is no server to withhold it from. It is a measurement of good-faith agreement
+  and should not be described as an exam.
+
 ## Decisions this design could not make
 
 1. ~~**Is the labelling sequential or one-shot?**~~ **Settled 2026-08-25:

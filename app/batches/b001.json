@@ -3,7 +3,7 @@
  "batch_id": "b001",
  "channel": "random",
  "created": "2026-08-26T20:19:22+00:00",
- "instructions": "Demo batch: the 100-patch equal-area pilot draw. These points are the uniform baseline, not an acquisition -- use them to try the app, not to grow the label set.",
+ "instructions": "The equal-area baseline. These 100 points were drawn uniformly over AlphaEarth-covered land with no model involved, so they are the arm every targeted channel is measured against \u2014 a coverage or retrieval batch only earns its complexity if it returns more usable plots per point than this one does. Work them exactly as you would any real batch; the calls count and the comparison depends on them being made to the same standard.",
  "calibration": false,
  "feedback": "immediate",
  "stage": null,

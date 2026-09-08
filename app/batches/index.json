@@ -1,6 +1,34 @@
 {
  "batches": [
   {
+   "batch_id": "cal_teach001",
+   "file": "cal_teach001.json",
+   "n": 25,
+   "channel": null,
+   "calibration": true,
+   "stage": "teach",
+   "created": "2026-09-07T11:58:46+00:00",
+   "assigned": {
+    "e1": 13,
+    "e2": 13
+   },
+   "assigned_to": "e1, e2"
+  },
+  {
+   "batch_id": "cal_qualify001",
+   "file": "cal_qualify001.json",
+   "n": 25,
+   "channel": null,
+   "calibration": true,
+   "stage": "qualify",
+   "created": "2026-09-07T11:58:46+00:00",
+   "assigned": {
+    "e1": 13,
+    "e2": 13
+   },
+   "assigned_to": "e1, e2"
+  },
+  {
    "batch_id": "b001",
    "file": "b001.json",
    "n": 100,
@@ -11,6 +39,34 @@
    "assigned": {
     "e1": 52,
     "e2": 53
+   },
+   "assigned_to": "e1, e2"
+  },
+  {
+   "batch_id": "cov001",
+   "file": "cov001.json",
+   "n": 75,
+   "channel": "coverage",
+   "calibration": false,
+   "stage": null,
+   "created": "2026-09-07T11:56:02+00:00",
+   "assigned": {
+    "e1": 39,
+    "e2": 40
+   },
+   "assigned_to": "e1, e2"
+  },
+  {
+   "batch_id": "rar001",
+   "file": "rar001.json",
+   "n": 75,
+   "channel": "retrieval",
+   "calibration": false,
+   "stage": null,
+   "created": "2026-09-07T11:56:02+00:00",
+   "assigned": {
+    "e1": 39,
+    "e2": 40
    },
    "assigned_to": "e1, e2"
   }

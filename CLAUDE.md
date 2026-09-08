@@ -191,7 +191,17 @@ supervision, guided filtering, dot/normalised-difference features).
   Artificial as Nature, and no reweighting, density control or fold count
   recovers it. Fold geometry is now cut on a fixed reference cloud
   (`fold_ref="reference"`); rows written before 2026-07-31 are `"union"` and are
-  not paired against the newer ones.
+  not paired against the newer ones. **§AA closes S2GAIA** (Zenodo 21883467) and
+  is the template for vetting any new public dataset: it ships **no
+  georeferencing at all** — the authors' own repo
+  (`github.com/eugeniapapathe/S2GAIA`) says so in three files, and writes its
+  `crs`/`tile`/`row_offset` manifest columns as empty strings — so nothing keyed
+  on a point, every pool here and the deployed model's own AlphaEarth block
+  included, can be built from it; and its multi-year labels are one frozen map
+  plus an annual burn overlay, with **0** pixels in 279 M entering any built
+  class, so not one instance of the commissioned transitions. Check both before costing an
+  extraction. `src/probe_s2gaia.py` settles it over HTTP Range without
+  downloading the 92 GB archive, which is the reusable trick.
 - `PATCH_SAMPLING.md` → `ACTIVE_LEARNING.md` — the labelling campaign.
   `PATCH_SAMPLING` sizes round two at ≈1,250 patches; `ACTIVE_LEARNING` is the
   design **plus sections AL0–AL5**, the replay lab (`src/al_lab.py`, 25 arms,
@@ -206,8 +216,21 @@ supervision, guided filtering, dot/normalised-difference features).
   (AL4); and chasing rare-class *retrieval* wrecks the model (`proto_sim`
   −0.046). Also: `Artificial -> Cropland`'s posterior never exceeds 0.191 in
   21 M pixels, so every model-in-the-loop score is blind to it by construction.
-  Metrics in `src/acquisition.py` (numpy only, no torch). **§AL7 is the
-  labelling instrument** — `app/label_app.html` (MapLibre + Esri Wayback, one
+  Metrics in `src/acquisition.py` (numpy only, no torch).
+  **Round one is drawn (2026-08-25)**: `cal_teach001`/`cal_qualify001` (25 each,
+  `src/build_calibration_candidates.py`), `cov001` (75,
+  `src/build_coverage_candidates.py` — deficit x *stable-class confusion* rate,
+  novelty-ranked within stratum, Vendi 26.4 vs 18.9 random) and `rar001` (75,
+  `src/build_rare_class_candidates.py` — weighted to scarcity, 20 each on the two
+  classes the deployed map cannot reach). **They are separate batches on
+  purpose**: coverage and retrieval move `natStab_as_art` in opposite directions,
+  so one mixed batch cannot be attributed. `b001` is the equal-area **control**
+  and was not redrawn — only its "demo" wording needs correcting.
+  **`rar001`'s `Artificial -> Cropland` points come from `siam_s2off_state_pre`,
+  not the deployed model**: on identical patches the deployed model returns 0
+  patches holding a labellable hectare and the state-pretrained siamese returns
+  12. A candidate generator is not a product and this does not re-open the
+  deployed model. **§AL7 is the labelling instrument** — `app/label_app.html` (MapLibre + Esri Wayback, one
   file, Google Sheet backend), `src/build_label_batches.py`,
   `src/build_batch_evidence.py`, `src/label_rounds.py`, `app/README.md`. Batch
   size 100 and no schedule parameter are AL4/AL5, not defaults; the posterior
