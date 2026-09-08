@@ -102,7 +102,10 @@ jobs:
       # uv, not setup-python: the suite's dependencies are resolved in uv.lock
       # and `--locked` below refuses to run if pyproject.toml has moved without
       # a relock. `--python 3.12` is what uv installs to satisfy them.
-      - uses: astral-sh/setup-uv@v10
+      # An EXACT tag: setup-uv stopped publishing a floating major tag
+      # after v7, so `@v10` is not a ref and the job dies in the
+      # "Set up job" step, before anything it guards has run.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
