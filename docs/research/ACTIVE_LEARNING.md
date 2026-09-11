@@ -2301,6 +2301,350 @@ batch resumes rather than showing nothing, and `expert` is never *added*: the
 annotation key is `(campaign, batch_id, point_id, expert_id)` and this link is
 meant to be sent to the other reader.
 
+## AL13 — the filmstrip is a film, and the capture date was the base map (2026-09-11)
+
+Both items are from the user opening the app and using it: *"there seems to be
+some bugs when I clicked to open the sentinel 2 chips and tried to transition
+between them. they do not switch smoothly. adding a play button to transition
+smoothly would help. also some of the esri wayback images do not return capture
+dates."*
+
+### AL13.1 — the lightbox could not step a year without rebuilding it
+
+None of the roughness was Earth Engine. `renderLightbox()` did four things per
+arrow press, and every one of them was visible:
+
+1. `img.removeAttribute('src')` — blanked the picture,
+2. showed `#lb-slice`, the baked sprite, at a **different size** — the
+   placeholder was `width: min(92%, 64vh)` on a div and the composite was
+   `max-width: 92%; max-height: 64vh` on an img, so the stage, the caption and
+   the buttons all moved as each year landed,
+3. `img.src = url; reveal()` — revealed the img the moment the src was
+   *assigned*, i.e. before a byte of it had decoded, so the stage went black,
+4. and did 3 twice: the strip's capped 176 px chip, then the 512 px full
+   composite over the top of it.
+
+Four repaints and two reflows per step, and stepping **back** to a year already
+looked at re-ran all of it, because nothing was kept. The eye cannot compare two
+pictures across that.
+
+So the lightbox is now a **frame stack on a fixed square stage**:
+
+- `#lb-stage` is one `min(92%, 64vh)` square with `overflow: hidden`, and both
+  the sprite and the frames fill it. Chips are square by construction
+  (`dimensions:` on a square region), so nothing is being cropped to make this
+  true. The stage never moves again.
+- `#lb-slice` is the baked sprite, underneath everything, for the whole session.
+  It is correct for the current year after one `background-position`, with no
+  network and no Earth Engine, so **the stage is never blank**.
+- `#lb-layers` holds **one decoded `<img>` per year**, kept. A year is shown by
+  adding a class. A frame is appended on `onload`, never on `src =`. A year
+  already looked at is a style change and no network at all.
+- The incoming frame fades in *on top of* the outgoing one (z-index, then the
+  outgoing is dropped 140 ms later), so the sprite underneath never shows
+  through the gap. A cross-fade that reveals the placeholder mid-way is worse
+  than a hard cut — and while the film is running the fade is switched off
+  entirely, because blending two years makes a third picture that is not a
+  reading of anything.
+- Frames are keyed on `chipScope(p) | combo | width`, which is what a frame *is*.
+  `applyChipVis` drops them, or the new scheme's caption sits over the old
+  scheme's bands.
+
+### AL13.2 — and then it can have a play button
+
+Which is the actual instrument. Nine annual frames at ~0.7 s separates the three
+things this campaign is trying to tell apart, and stepping by hand cannot:
+
+| what it is | what the film does |
+| --- | --- |
+| real change | appears at one year and **stays** |
+| a disturbance that recovered | appears, then greens back |
+| an atmospheric or wet-year artefact | flickers once and goes away |
+
+`▶ play` / `❙❙ pause`, Space or `P`, a 0.2–2.0 s speed slider remembered per
+reader in `localStorage`, and a year ruler under it (the caption is the only
+thing that moves while it runs, and it is text; the ruler says where the film is
+and a click steps straight to a year).
+
+Three details that are not free choices:
+
+- It is a **`setTimeout` chain, not `setInterval`**. An interval keeps firing
+  while a frame is still decoding and the film runs ahead of its pictures.
+- **Prefetch in play order from where the interpreter is**, two at a time.
+  This is `warm_ts_cache.py` and `build_batch_chips.py` one more time — pay
+  Earth Engine before the human does — except what is being warmed is a decoded
+  bitmap in this tab. Two at a time and not nine: nine composites asked for at
+  once is AL9's measured mistake, where everything piles up at the ~35 s
+  concurrency throttle and the year being *looked at* arrives last.
+- **The film runs on CAPPED frames and only the year being read is upgraded**,
+  and this reverses a choice the old lightbox made for a good reason that the
+  film invalidates. That code fetched the **uncapped** composite, on AL9's
+  principle that an interpreter who has deliberately enlarged a year is waiting
+  on purpose. Right for one year; wrong for nine — AL9 timed uncapped chips at
+  15–41 s each against 5–6 s for the 12-scene cap, so prefetching nine of them
+  would spend minutes of Earth Engine per lightbox open, mostly on years nobody
+  looks at, and the film could not start until they landed. And the cap is
+  almost free to look at: AL9 measured a **median 0.002 relative reflectance
+  difference at the plot** over 10 points. So all nine frames are capped, the
+  year on screen is upgraded to uncapped and its frame **replaced in place**
+  (the picture never goes away while that happens), and the caption says which
+  of the two is on screen — `seasonal composite (12 scenes) · refining…` then
+  `seasonal composite`. A year is upgraded once; stepping back is free.
+  **And the upgrade does not fire while the film is running** — a year the film
+  passes through is not a year being read, and upgrading each in turn requests
+  all nine uncapped composites over one play-through, which is the spend the cap
+  was chosen to avoid, in front of the frames the film still needs. `lbPause`
+  asks for the year it stops on, because stopping on a year *is* choosing to
+  read it.
+  A slot is also released after 60 s whether or not its year arrived: `chipUrl`
+  has no timeout of its own, and two unanswered years would otherwise hold both
+  slots and the rest of the film would never be asked for.
+- The film **skips years with no composite**, and so do ←/→. A year with no
+  cloud-free growing-season composite renders black, which reads as a broken
+  image rather than as an absence; the strip already marks those cells `nodata`
+  and `lbNoData` is the same test.
+
+It degrades the whole way down: with Earth Engine never connected the film runs
+entirely off the baked sprite, which is the common case for a labeller, and it is
+perfectly smooth there because a static file has no scheduler.
+
+### AL13.3 — "no capture date" was the global base map being reported as one
+
+**This is the instrument the whole task runs on**: the label is a 2018 → 2024
+transition and the capture dates are what say whether the two pictures are
+actually of those years. `imagery_a`/`imagery_b` carry them into every record.
+
+`_wbFetchMeta` probed the metadata sublayers `[L0, L0+1, L0+2, L0+3, 13]` — the
+band matched to the working zoom (`23 - 15 = 8`), the three next-coarser, and
+the base that bounds the walk — and then took `hits.find(Boolean)`: **the first
+band that returned a feature, dated or not.** Two faults, and they compound:
+
+1. **Band 13 (and 12) is Esri's 15 m TerraColor global base, and it answers at
+   every point on Earth with `SRC_DATE` and `SRC_DATE2` both null.** So whenever
+   the bands around the working zoom had no footprint at the point, the base-map
+   row won and the date became the literal string `"unknown date"` — which is
+   also what a broken lookup would have said.
+2. **Nothing finer than the matched band was ever requested**, and band 12 was
+   skipped outright as well — `L0..L0+3` and then a jump to 13. Be exact about
+   the standing of this one: band coverage *is* patchy in both directions —
+   measured at Oslo against the 2018-07-25 release, bands 4–9 carry DigitalGlobe
+   footprints and 10–11 carry nothing at all — so a point one notch less covered
+   than Oslo has only finer bands to offer and could not have been found. But
+   **no such point turned up in the 120 reads below**; all five failures there
+   are fault 1. So this half is a hole closed by argument and by fixture
+   (`OSLO_2018_FINER_ONLY`), not a fault observed in the draw.
+
+**Measured on round one's own draw** (60 points × both sides, all fourteen
+sublayers probed): **5 of 120 reads have no date**, and in every one of them
+*no band carries a date at all* — 79.07N −31.74, 66.55N −45.66, 66.31N 178.16.
+(That last point does return a 2018-09-10 Maxar scene under the neighbouring
+2024-06-27 release, which is a reminder that this is a per-release question and
+`wbSnapRefine` is the thing that acts on it.)
+Those are Arctic points where there genuinely is no dated high-resolution survey
+and the 15 m base is all there is. Which is the fix: that is **an answer about
+the point**, and it reads completely differently from a failure.
+
+So the lookup now probes in **two waves** and will not take an undated row as a
+date:
+
+- wave one is the same five requests as before (plus band 12, which was simply
+  missing), and it answers 115 of 120;
+- wave two — the finer bands, then the remaining coarse ones — goes out only
+  when wave one yields no *dated* row, so the 4% that fail pay for it and the
+  96% that do not, do not. §AL11.6's fan-out budget is unchanged in the common
+  case.
+- among dated rows, the band **nearest the working zoom** wins, finer on a tie.
+  Oslo 2024 carries two different Maxar scenes — 2023-08-22 at bands 4–7 and
+  2023-06-10 at 8–11 — and a tile at zoom 15 is drawn from band 8. Picking the
+  finest available would caption the picture with a scene the interpreter is
+  not looking at.
+- if the only rows are undated, the answer is `{date: null, base: true}` and it
+  is rendered and **recorded** as *"no dated survey; global base imagery
+  (release …)"*. An interpreter comparing two calls needs to know whether the
+  dates were unknown or known-absent.
+
+One more thing came out of the same measurement: `SRC_DATE` is `YYYYMMDD` on
+most rows but also `YYYYMM` and bare `YYYY` on older sources, and the
+8-digit-only test rejected those and fell through to `SRC_DATE2`, which on those
+same rows is null. A month or a year is perfectly good provenance for a
+2018-vs-2024 call and was being thrown away. `wbRowDate` returns the precision
+alongside the date, the read-out says *(month only)*, and `wbIso` is the single
+place that decides what downstream can use — the gap warning and the release
+snap both tested for a full ISO day and discarded partials silently.
+
+`tests/test_wayback_meta.py` holds all of it, running the app's own JavaScript
+in node against rows recorded from the live service. Per §AL8 it does not
+re-implement the selection in Python: a Python double cannot police a contract
+the JavaScript may not have signed.
+
+### AL13.4 — three controls, one map, and nothing said who had it
+
+Also from using the app: *"only one basemap, esri wayback or earth engine layer
+should be visible at one time. at the moment the layer of interest may not be
+visible."*
+
+Three controls in three separate cards put imagery on the map — the **basemap**
+picker, the **Esri Wayback** switch, and the **Earth Engine** layer buttons —
+and AL-earlier fixed their *z-order* without ever making them exclusive. The
+order is deliberate and correct (basemaps, Wayback at `ANCHOR_IMAGERY`, the
+Earth Engine raster at `ANCHOR_OVERLAY`), which is exactly what makes the fault
+reliable rather than intermittent:
+
+- choose `Sentinel-2 cloudless 2018` while the archive is on and **nothing
+  visible happens**. Wayback is opaque and above every basemap, so the picker
+  whose whole purpose is to put *the model's own sensor at the model's own
+  pixel* on screen looks broken;
+- turn the archive on under a 70%-opaque global class raster and the sub-metre
+  survey arrives as a wash of Dynamic World colours.
+
+Neither control said anything. That is §AL9's chip fallbacks and §AL10's stale
+sprites one panel over, and the same lesson: **the control reported success, the
+map showed something else, and the interpreter concludes the app is broken
+rather than that a layer is on top.**
+
+So the three are mutually exclusive. `useMapSource('base'|'wayback'|'ee')` is
+the one place that decides, every control calls it, and it is re-entrancy
+guarded — turning the others off fires *their* change handlers, which would
+claim the map straight back. Wayback is switched through `wb.setOn`, which goes
+through the checkbox's own handler rather than re-implementing a teardown that
+also drops the swipe compare, re-disables six controls and hides the capture-date
+read-out.
+
+**One thing cannot be literally satisfied, and is stated rather than hidden.**
+There is no "no basemap" state, so an Earth Engine layer is still drawn *over*
+the basemap — it is a semi-transparent and often masked prior (`dwbuilt` and
+`obtemporal` are transparent wherever nothing changed, per §AL9) and on a blank
+background it would be unreadable. What picking one now does is turn the
+**archive** off, so the ground beneath it is the 10 m basemap it can be compared
+against rather than a 0.5 m aerial survey at a scale it does not answer at.
+
+And the fix is not only the exclusivity: an **"on the map:" read-out is mirrored
+into all three cards**, because the fault is an interpreter working in *one* card
+and not being told that another one owns the map. It names the Wayback release,
+not just "Wayback" — which release is showing is what a capture-date call depends
+on (§AL13.3) — and it moves when the release does. That last part was written
+into `applyReleaseB` first, where it fired only for the swipe's right half while
+the read-out went on naming the release the interpreter had just stepped off;
+`applyRelease` is the A side and the one the main map draws.
+
+### AL13.5 — the panel is a share of the window, and the archive opens on the answer
+
+Two more from using it: *"could you make the panel size adaptable to the screen
+on which it is being viewed"* and *"for the esri wayback imagery make the
+default to be split pane at the two endpoints for that location"*.
+
+**The panel width was three separate ways of being wrong about the screen.** A
+flat `430px` default, a flat `[320, 680]` drag clamp, and a stored width
+restored verbatim:
+
+- 430 px is a third of a 1280 laptop lid and an eighth of a 4K desktop — the
+  same panel is cramped on one and lost on the other;
+- a width dragged to 680 on a large monitor comes back on a 1366 px laptop and
+  takes **half** the window, leaving the map — the instrument — as the smaller
+  half, and squeezing the chip lightbox with it, since that is positioned off
+  `--panel-w`;
+- nothing re-ran on `resize`, so the same thing happened to a window simply made
+  smaller, or a laptop undocked from its second screen.
+
+Now `panelBounds()` derives everything from the viewport: **32% preferred**,
+floored at 320 px (what the two three-button class rows need), capped at 46% of
+the window and never above 680 px, because a form does not get better past that
+and the map is the instrument. Measured on the running app: 410 px at 1280,
+614 px at 1920, 680 px at 2560.
+
+Two details that are the actual fix rather than the arithmetic. The stored
+preference is **clamped, not overwritten** — undocking must not lose the width
+chosen for the dock, so a small window re-clamps and a large one gives it back.
+And `--panel-w` is declared in CSS as `clamp(320px, 32vw, 680px)` rather than
+defaulted per-rule to `430px`, so the **first paint** is already a share of the
+window and the panel does not land at a fixed width and then jump. The two
+definitions are one contract and are noted as such in both files. Double-click
+on the grip resets to the preferred width, because a width nobody can find their
+way back from is a width they will not try.
+
+**And the archive now opens on the comparison it exists for.** `wb-on` gave one
+release — whichever `wb.idx` held, which on a fresh session is the *newest*,
+serving 2025/2026 imagery against a 2018 → 2024 question — and the interpreter
+then had to know to press `Set nearest imagery to 2018 ⇆ 2024`. The snap body is
+factored out as `wbSnapToTargets()` and is what turning the archive on does: A =
+nearest 2018, B = nearest 2024, the swipe on, both stages run, so
+`wbSnapRefine` then moves each side to the release whose *capture* date **at that
+point** is nearest its target. The button is still there and is how you come back
+after stepping the releases around. The AL13.4 read-out names both sides now,
+because the swipe is two releases and naming the left one describes half the
+screen.
+
+**A test-method note worth keeping.** The first version of these Wayback tests
+seeded `wb.releases` from the test and looked like it worked. It was a race:
+`wb.warm()` fetches the real index at idle and whichever landed second won — on
+a machine with network, usually the real one — so a test asserting "it snapped
+to 2018" was reading Esri's newest release and passing or failing by timing. The
+fix is to **route the request** and let the app's own `ensureLoaded` build the
+list from a stubbed index, before the first byte. Seeding state that the code
+under test also fetches is not a stub; it is a coin toss.
+
+### AL13.6 — the swipe's dates were behind the furniture, and the release list was the wrong list
+
+Three items from the first real use of the new archive default: *"the date
+selector for the right side does not show up. also the release for this area
+only should be checked."* And: the AL13.4 read-out *"should not be shown. it is
+not needed."*
+
+**The right-hand date was not missing; it was underneath the panel.** And once
+measured, so was the left one. `.wb-swipe-label` is a child of `#map`, and
+`#map` is **full width** — the panel is a layer over it, not a second pane (see
+the camera-padding note) — so `right: 10px` anchored the right-hand date to the
+right edge of a map that runs *behind* the panel, and `bottom: 34px` put the
+left-hand one in the chip filmstrip. Measured at 1440x900 before the fix: label
+B spanned x 1233-1430 against a panel starting at x 967, and `elementFromPoint`
+at the centre of each returned panel content and a chip cell. Only the card's
+left-hand `<select>` was visible, which is why the fault reads as *the right
+side* being missing.
+
+The obvious repair is wrong too, and this is the part worth keeping: **the top
+edge with each label in its own half does not work, because `#ctrl-right` spans
+x 651-951 over almost the map's full height.** While the Map controls card is
+open there is no free space in the right half of the visible map to put
+anything. So the two dates are now **one row at top-left**, the one region that
+is always clear, and `◀` / `▶` carry which half each describes. z-index stays at
+3 — the map layer, under the panel at 4 — because outranking the panel would
+only turn "hidden" into "a date pill floating over the form". Geometry was the
+bug and geometry is the fix.
+
+`tests/test_both_swipe_dates_are_actually_visible` asserts it the only way that
+catches this: lift `pointer-events` for the hit test (these are
+`pointer-events: none`, so `elementFromPoint` otherwise falls straight through
+to the map canvas and the test can never fail), check the label is what is
+painted at its own centre, and check the row's box intersects none of
+`ctrl-right`, `panel`, `ev-film`.
+
+**"Only releases with new imagery at this sample" is now checked by default.**
+Most of the ~196 releases re-serve older tiles, so the unfiltered list offers
+~180 dates that are the same picture — and the endpoint snap can land on one of
+them, which is how a side ends up captioned 2018-06-27 while showing 2017
+imagery. Measured at b001/p0000: 196 releases → **14** with distinct local
+imagery.
+
+It runs in **two passes**, for the same reason AL13.5's snap does: the filter
+decides what `wb.view` holds and `wbNearestRelease` picks out of `wb.view`.
+Snap once by release date (instant, a usable comparison immediately), walk the
+tilemap (a few seconds), then snap again inside what survives. Filtering first is
+correct and makes the archive appear to hang on nothing; doing only the first
+leaves both sides on releases that re-serve someone else's tiles. `wbPickTargets`
+is split out of `wbSnapToTargets` for the point-change path, which must re-pick
+without reopening a divider the interpreter deliberately closed.
+
+Expect the displayed dates to **move** a few seconds after switch-on — at
+b001/p0000, 2018-06-27 → 2017-05-31. That is the honest answer replacing a
+flattering one, and it is the whole point of the filter.
+
+**And AL13.4's "on the map:" read-out is removed** — markup, CSS, render
+function and test. The exclusivity stays; the user's judgement is that the
+controls already show it by clearing their own checkbox or button highlight, and
+a sentence repeated in three cards is three things to read on every glance. Worth
+recording as a correction rather than quietly dropping: the *diagnosis* in AL13.4
+was right and the remedy was one thing too many.
+
 ## Round one, built (2026-08-25)
 
 The first real draw, and the point at which AL0-AL6 stop being a ledger entry

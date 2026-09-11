@@ -2225,7 +2225,7 @@ function batchShapeHTML() {
 // Map
 // ════════════════════════════════════════════════════════════════════════════
 let map;
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 // "Am I looking at the new one?" is otherwise a question you answer by reading
 // a diff. `document.lastModified` is the HTML's own timestamp, so a stale page
@@ -2704,6 +2704,59 @@ function waybackSiteUrl(lat, lon) {
        + lon.toFixed(6) + '%2C' + lat.toFixed(6) + '%2C17';
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// ONE IMAGERY SOURCE AT A TIME
+//
+// Three controls, in three separate cards, each of which puts imagery on the
+// map: the **basemap** picker, the **Esri Wayback** switch, and the **Earth
+// Engine** layer buttons. They were independent, and they are stacked in a
+// fixed z-order (basemaps, then Wayback at `ANCHOR_IMAGERY`, then the Earth
+// Engine raster at `ANCHOR_OVERLAY`), so turning one on could silently bury
+// another:
+//
+//   * pick `Sentinel-2 cloudless 2018` while the archive is on and **nothing
+//     visible happens** — Wayback is opaque and sits above every basemap, so
+//     the picker that is meant to put the model's own sensor on screen appears
+//     to be broken;
+//   * turn the archive on under a 70%-opaque global class raster and the
+//     sub-metre survey you turned on to look at is a wash of Dynamic World
+//     colours.
+//
+// Neither says anything. That is the same silence as §AL9's chip fallbacks and
+// §AL10's stale sprites, one panel over: the control reports success, the map
+// shows something else, and the interpreter concludes the app is broken rather
+// than that a layer is on top.
+//
+// So the three are now **mutually exclusive**, and every switch says what it
+// turned off. One thing cannot be literally satisfied and is stated rather than
+// hidden: there is no "no basemap" state, so an Earth Engine layer is drawn
+// over the basemap — it is a semi-transparent, often masked prior (`dwbuilt`
+// and `obtemporal` are transparent wherever nothing changed) and on a blank
+// background it would be unreadable. What picking one DOES do is turn the
+// archive off, so the ground under it is the 10 m basemap it can be compared
+// against rather than a 0.5 m aerial survey at a scale it does not answer at.
+//: 'base' | 'wayback' | 'ee' -- which control last claimed the map.
+let mapSource = 'base';
+//: Each of the three switches turns the other two off, and doing that fires
+//: their own change handlers, which would claim the map straight back. One
+//: claim at a time.
+let mapSourceBusy = false;
+
+/** Claim the map for one of the three controls, turning the other two off.
+ *
+ *  Every caller is a control the interpreter just operated, so this never
+ *  guesses: the thing most recently switched on is the thing they want to see.
+ */
+function useMapSource(which) {
+  if (mapSourceBusy) return;
+  mapSourceBusy = true;
+  try {
+    if (which !== 'wayback' && wb.setOn) wb.setOn(false);
+    if (which !== 'ee' && eeActive.key) eeDropLayers();
+    mapSource = which;
+  } finally { mapSourceBusy = false; }
+}
+
 function initLayerControls() {
   // Built from EOX_YEARS rather than written out in the markup, so the year list
   // has one definition and the <select> cannot offer a year `BASES` has no
@@ -2723,6 +2776,11 @@ function initLayerControls() {
       map.setLayoutProperty('base-' + k, 'visibility', k === base ? 'visible' : 'none');
     map.setLayoutProperty('labels', 'visibility',
       v === 'esri-labels' ? 'visible' : 'none');
+    // Picking a basemap is asking to SEE it, and both of the layers above it
+    // are opaque enough to make this control look broken otherwise. Wayback
+    // especially: it covers every basemap completely, so choosing the 2018
+    // Sentinel-2 mosaic under it changes nothing on screen at all.
+    useMapSource('base');
   });
   const bind = (id, layer) => $(id).addEventListener('change', e =>
     map.setLayoutProperty(layer, 'visibility', e.target.checked ? 'visible' : 'none'));
@@ -2792,12 +2850,44 @@ const wb = {
 const wbCmp = { map: null, on: false, idxB: 0, f: 0.5, els: null, onResize: null,
                 everSet: false };
 
+/** A metadata answer's date as something `Date` can parse, or null.
+ *
+ *  ACCEPTS PARTIAL DATES, which is the point of it. `wbRowDate` returns
+ *  `2016-09` and `2016` as well as full days, because the service carries all three and rejecting the first
+ *  two threw away a real answer. Everything downstream — the gap warning, the
+ *  release snap, the record — takes the widest form it can use, and `Date`
+ *  parses all three as UTC. */
+function wbIso(m) {
+  const d = m && m.date;
+  return (d && /^\d{4}(-\d{2}(-\d{2})?)?$/.test(d)) ? d : null;
+}
+
+/** What a metadata answer says, in words, for the read-out and the record.
+ *
+ *  Three outcomes and they must not be confused with each other: a dated
+ *  survey, the 15 m global base with no dated survey at all (a real answer
+ *  about this point), and no answer. The middle one used to read "unknown
+ *  date", which is the same words the app would use for a broken lookup. */
+function wbDateWords(m) {
+  if (!m) return 'no imagery metadata here';
+  if (m.date) return m.date;
+  if (m.base) return 'no dated survey — Esri\u2019s global base imagery'
+                   + (m.res ? ' (' + m.res + ' m)' : '');
+  return 'date not recorded';
+}
+
 function wbCaptureNote(side) {
   const m = side === 'a' ? wb.metaA : wb.metaB;
   const r = side === 'a' ? wb.releases[wb.idx] : wb.releases[wbCmp.idxB];
   if (!wb.on || !r) return '';
   const rel = 'release ' + r.date;
-  return m && m.date ? (m.date + ' (' + rel + ')') : rel;
+  if (!m) return rel;
+  // The record has to carry WHICH of the three it was, because an interpreter
+  // comparing two calls needs to know whether the dates were unknown or
+  // known-absent. `base` is the second.
+  if (m.date) return m.date + ' (' + rel + ')';
+  if (m.base) return 'no dated survey; global base imagery (' + rel + ')';
+  return rel;
 }
 
 /** Signed years from `iso` to `target`. Negative = earlier than the target. */
@@ -2929,37 +3019,119 @@ function wbFetchMeta(rel, pt, outerSignal) {
                       err => { release(); throw err; });
 }
 
+/** The capture date out of one metadata row as `{date, precision}`, or null.
+ *
+ *  MEASURED against the live service, and both fields need handling. `SRC_DATE`
+ *  is `YYYYMMDD` on the rows that carry one — but it is also `YYYYMM` and bare
+ *  `YYYY` on older sources, and the 8-digit-only test rejected those and fell
+ *  through to `SRC_DATE2`, which on the same rows is null. A month or a year is
+ *  a perfectly good provenance note for a 2018-vs-2024 call and was being
+ *  thrown away in favour of "unknown date".
+ *
+ *  Returns the precision too, because "2016" and "2016-09-08" are different
+ *  claims and the record should not round the first one up to the second. */
+function wbRowDate(at) {
+  const raw = String(at.SRC_DATE == null ? '' : at.SRC_DATE).trim();
+  let m = /^(\d{4})(\d{2})(\d{2})$/.exec(raw);
+  if (m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31)
+    return { date: m[1] + '-' + m[2] + '-' + m[3], precision: 'day' };
+  m = /^(\d{4})(\d{2})$/.exec(raw);
+  if (m && +m[2] >= 1 && +m[2] <= 12)
+    return { date: m[1] + '-' + m[2], precision: 'month' };
+  if (/^\d{4}$/.test(raw) && +raw >= 1970 && +raw <= 2100)
+    return { date: raw, precision: 'year' };
+  if (at.SRC_DATE2 != null && at.SRC_DATE2 !== '') {
+    const d2 = new Date(Number(at.SRC_DATE2));   // the query returns epoch ms
+    if (!isNaN(d2)) return { date: d2.toISOString().slice(0, 10), precision: 'day' };
+  }
+  return null;
+}
+
+function wbRowInfo(at) {
+  return { provider: [at.NICE_DESC, at.SRC_DESC]
+             .filter(x => x && x !== 'None').join(' '),
+           res: +at.SRC_RES || +at.SAMP_RES || null };
+}
+
+/** True acquisition date at a point.
+ *
+ *  WHY THIS PROBES IN TWO WAVES AND WHY IT WILL NOT TAKE THE FIRST ANSWER
+ *
+ *  It used to probe `[L0, L0+1, L0+2, L0+3, 13]` and take `hits.find(Boolean)`
+ *  — the first band that returned a FEATURE. Two faults, and together they are
+ *  why some releases showed no capture date at all:
+ *
+ *   1. Band 13 (and 12) is Esri's 15 m TerraColor global base, and it answers
+ *      at EVERY point on Earth with `SRC_DATE` and `SRC_DATE2` both null. So
+ *      whenever the four bands around the working zoom happened to have no
+ *      footprint here, `find(Boolean)` picked the base-map row and the date
+ *      became the literal string "unknown date" — while the imagery on screen
+ *      was a dated Maxar scene sitting in a band that was never asked.
+ *   2. It only ever looked at L0 and COARSER. Measured at Oslo against the
+ *      2018-07-25 release: bands 4-9 carry DigitalGlobe footprints, bands
+ *      10 and 11 carry nothing. A point whose only footprints are finer than
+ *      L0 therefore had no chance of being found, because nothing finer than
+ *      L0 was ever requested. Band 12 was skipped outright as well —
+ *      `L0..L0+3` then a jump to 13.
+ *
+ *  So: probe the matched band and its coarser neighbours first (the common
+ *  case, and the same five requests as before), and only when that yields no
+ *  DATED row spend a second wave on the finer bands and the rest of the
+ *  coarse ones. A dateless row is still kept, because "the only thing here is
+ *  the 15 m global base" is a real answer about a point and reads completely
+ *  differently from a failed lookup — the read-out says which.
+ */
 async function _wbFetchMeta(rel, pt, key, outerSignal) {
   const L0 = Math.min(Math.max(23 - wbMetaZoom(), 0), 13);
-  // The matched band, the three next-coarser ones, and the TerraColor base that
-  // bounds the walk. Concurrent: one round trip instead of up to thirteen.
-  const bands = [];
-  for (let L = L0; L <= Math.min(L0 + 3, 13); L++) bands.push(L);
-  if (bands[bands.length - 1] !== 13) bands.push(13);
+  // Wave one: the matched band, the three next-coarser, and the base layer that
+  // bounds the walk. Concurrent, one round trip.
+  const wave1 = [];
+  for (let L = L0; L <= Math.min(L0 + 3, 13); L++) wave1.push(L);
+  if (wave1.indexOf(13) < 0) wave1.push(13);
+  // Wave two: everything else. Finer first — a footprint finer than the working
+  // zoom is imagery that IS at this point, just mapped at a higher resolution
+  // than the tile being drawn, whereas the remaining coarse bands are mostly
+  // the base map again.
+  const wave2 = [];
+  for (let L = L0 - 1; L >= 0; L--) wave2.push(L);
+  for (let L = L0 + 4; L <= 13; L++) if (wave1.indexOf(L) < 0) wave2.push(L);
 
   // The shared abort, so leaving the point cancels this for every caller of it;
   // `outerSignal` still composes for a caller with its own lifetime.
   const t = wbTimeoutSignal(12000,
     outerSignal ? AnySignal(outerSignal, wbMetaCtl.signal) : wbMetaCtl.signal);
-  let hits;
+  const rows = new Map();          // layerId -> attributes
+  const probe = async bands => {
+    const hits = await Promise.all(bands.map(L =>
+      _wbQueryLayer(rel, pt, L, t.signal)
+        .then(a => [L, a]).catch(() => [L, null])));
+    for (const [L, a] of hits) if (a) rows.set(L, a);
+  };
+  const dated = () => [...rows.entries()].filter(([, a]) => wbRowDate(a));
   try {
-    hits = await Promise.all(bands.map(L =>
-      _wbQueryLayer(rel, pt, L, t.signal).catch(() => null)));
+    await probe(wave1);
+    if (!dated().length && wave2.length) await probe(wave2);
   } finally { t.done(); }
 
-  const at = hits.find(Boolean);       // finest band that answered
   let out = null;
-  if (at) {
-    let date = null;
-    if (/^\d{8}$/.test(String(at.SRC_DATE || '')))
-      date = String(at.SRC_DATE).replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3');
-    else if (at.SRC_DATE2 != null) {
-      const d2 = new Date(at.SRC_DATE2);      // query returns epoch ms
-      if (!isNaN(d2)) date = d2.toISOString().slice(0, 10);
-    }
-    out = { date: date || 'unknown date',
-            provider: [at.NICE_DESC, at.SRC_DESC].filter(x => x && x !== 'None').join(' '),
-            res: +at.SRC_RES || +at.SAMP_RES || null };
+  const hits = dated();
+  if (hits.length) {
+    // Nearest the matched band, and the finer one on a tie: two bands equally
+    // far from the working zoom describe the same ground, and the higher-
+    // resolution footprint is the one whose date the interpreter can check by
+    // zooming in.
+    hits.sort((a, b) => (Math.abs(a[0] - L0) - Math.abs(b[0] - L0)) || (a[0] - b[0]));
+    const [band, at] = hits[0];
+    const d = wbRowDate(at);
+    out = Object.assign({ date: d.date, precision: d.precision, band: band },
+                        wbRowInfo(at));
+  } else if (rows.size) {
+    // Undated rows only. That is the 15 m global base and nothing else, which
+    // means there is no dated high-resolution survey of this point in this
+    // release — an answer, not a failure, and `base` is what says so.
+    const at = rows.get([...rows.keys()].sort((a, b) => a - b)[0]);
+    out = Object.assign({ date: null, precision: null, base: true },
+                        wbRowInfo(at));
   }
   wbMetaCache[key] = out;
   return out;
@@ -3144,6 +3316,21 @@ function initWayback() {
   //: at idle instead; the interpreter never sees the wait.
   wb.warm = () => { if (!wb.loaded) ensureLoaded(); };
 
+  /** Switch the archive from outside this closure -- `useMapSource` needs it,
+   *  because the basemap picker and the Earth Engine buttons both have to be
+   *  able to turn it off.
+   *
+   *  It goes through the checkbox's own `change` handler rather than
+   *  re-implementing the teardown: that handler also drops the swipe compare,
+   *  re-disables six controls and hides the capture-date read-out, and a second
+   *  copy of all that would be a second thing to keep in step. No-ops when the
+   *  switch is already where it is asked to be, so nothing re-runs. */
+  wb.setOn = on => {
+    if (onBox.checked === !!on) return;
+    onBox.checked = !!on;
+    onBox.dispatchEvent(new Event('change'));
+  };
+
   // ── the capture-date readout ──────────────────────────────────────────────
   // At the POINT, always. It used to follow wb.lastPt, which the map click
   // handler moved to wherever the interpreter clicked — so an interpreter who
@@ -3166,10 +3353,21 @@ function initWayback() {
     Promise.resolve().then(() => { metaQueued = false; updateWbMeta(); });
   }
 
-  const fmtM = m => m
-    ? '<b>' + m.date + '</b>' + (m.provider ? ' · ' + esc(m.provider) : '')
-      + (m.res ? ' · ' + m.res + ' m' : '')
-    : 'no imagery metadata here';
+  //: `m.date` can be a day, a month, a year, or absent with `base` set. The
+  //: old form interpolated it raw and printed the string "null" for the last
+  //: of those, which is what an interpreter saw when a release had no dated
+  //: survey at the point.
+  const fmtM = m => {
+    if (!m) return 'no imagery metadata here';
+    const words = wbDateWords(m);
+    const head = m.date ? '<b>' + esc(words) + '</b>'
+                        : '<i>' + esc(words) + '</i>';
+    return head
+      + (m.date && m.precision && m.precision !== 'day'
+           ? ' <span class="dim">(' + m.precision + ' only)</span>' : '')
+      + (m.provider ? ' · ' + esc(m.provider) : '')
+      + (m.res && m.date ? ' · ' + m.res + ' m' : '');
+  };
 
   async function updateWbMeta() {
     if (!metaEl) return;
@@ -3230,11 +3428,10 @@ function initWayback() {
     const one = (side, relIdx, meta, target, label) => {
       const r = wb.releases[relIdx];
       if (!r) return;
-      const iso = (meta && meta.date && /^\d{4}-\d{2}-\d{2}$/.test(meta.date))
-        ? meta.date : r.date;
+      const cap = wbIso(meta);
+      const iso = cap || r.date;
       out.push({ side: label, date: iso, gap: wbGapYears(iso, target),
-                 targetYear: target.slice(0, 4),
-                 exact: !!(meta && meta.date && /^\d{4}/.test(meta.date)) });
+                 targetYear: target.slice(0, 4), exact: !!cap });
     };
     one('a', wb.idx, wb.metaA, WB_TARGET_A, 'left');
     if (wbCmp.on) one('b', wbCmp.idxB, wb.metaB, WB_TARGET_B, 'right');
@@ -3282,11 +3479,26 @@ function initWayback() {
     const div = document.createElement('div'); div.id = 'wb-compare-map';
     const sw = document.createElement('div'); sw.id = 'wb-swipe';
     sw.innerHTML = '<div class="knob">⇆</div>';
+    // ONE ROW, both dates in it, top-left of the map.
+    //
+    // They were `left: 10px` and `right: 10px` on a map that is FULL WIDTH --
+    // the panel is a layer over it, not a second pane -- so the right-hand date
+    // sat under the panel and the left one under the chip filmstrip. Measured
+    // at 1440x900: label B spanned x 1233-1430 against a panel starting at 967.
+    // The right side's date read as simply missing, which is what it was.
+    //
+    // And the obvious repair -- top edge, each in its own half -- does not work
+    // either: the Map controls card occupies x 651-951 over almost the map's
+    // full height, so while it is open there is NO free space in the right half
+    // to put anything. Hence one row on the left, where there always is: the
+    // pair reads together, and `◀`/`▶` carry which half each describes.
+    const row = document.createElement('div'); row.id = 'wb-swipe-labels';
     const la = document.createElement('div'); la.className = 'wb-swipe-label a';
     const lb = document.createElement('div'); lb.className = 'wb-swipe-label b';
+    row.appendChild(la); row.appendChild(lb);
     mapEl.appendChild(div); mapEl.appendChild(sw);
-    mapEl.appendChild(la); mapEl.appendChild(lb);
-    wbCmp.els = { div, sw, la, lb };
+    mapEl.appendChild(row);
+    wbCmp.els = { div, sw, row, la, lb };
 
     wbCmp.map = new maplibregl.Map({
       container: div, style: { version: 8, sources: {}, layers: [] },
@@ -3368,8 +3580,31 @@ function initWayback() {
       wb.on = true;
       sel.disabled = opacity.disabled = localBox.disabled = cmpBox.disabled = false;
       snapBtn.disabled = false;
+      // Claimed AFTER `ensureLoaded`, so a failed index load -- which unchecks
+      // the box and returns above -- does not turn the Earth Engine layer off
+      // for an archive that never came up.
+      useMapSource('wayback');
       applyRelease();
-      if (wb.localOnly) applyLocalFilter();
+      // AND LAND ON THE TWO DATES THE LABEL IS ABOUT. Turning the archive on
+      // used to give one release -- whichever `wb.idx` happened to hold, which
+      // on a fresh session is the NEWEST, serving 2025/2026 imagery against a
+      // 2018 -> 2024 question -- and the interpreter then had to find the
+      // `Set nearest imagery to 2018 ⇆ 2024` button to get to the comparison
+      // the archive exists for. It is the default now; the button is how you
+      // come back to it after stepping the releases around.
+      //
+      // IN TWO PASSES, because the local filter decides which releases exist
+      // here and the snap picks from `wb.view`. Snapping once by release date
+      // is instant and puts a usable comparison up immediately; the filter then
+      // walks the tilemap (a few seconds), and the second snap re-picks from
+      // what is left. Doing it the other way round -- filter, then snap -- is
+      // correct and makes the archive appear to hang on nothing; doing only the
+      // first leaves both sides on releases that re-serve someone else's tiles.
+      await wbSnapToTargets();
+      if (localBox.checked) {
+        await applyLocalFilter();
+        if (wb.on && wb.localOnly) await wbSnapToTargets();
+      }
     } else {
       wb.on = false;
       if (map.getLayer(WB_LAYER))
@@ -3382,6 +3617,9 @@ function initWayback() {
       }
       metaEl.style.display = 'none';
       note.textContent = 'Turn on archive imagery to compare historical captures.';
+      // Switching the archive off hands the map back to the basemap, unless
+      // something else is in the middle of claiming it.
+      if (!mapSourceBusy) useMapSource('base');
     }
   });
 
@@ -3437,15 +3675,40 @@ function initWayback() {
   // B used to be `wb.view[0]` — the newest release, which now serves 2025/2026
   // imagery against a 2024 question. Neither side may silently be four years
   // from the date it claims to show.
-  snapBtn.addEventListener('click', async () => {
-    if (!wb.loaded) { const ok = await ensureLoaded(); if (!ok) return; }
+  /** A = nearest 2018, B = nearest 2024, side by side under the swipe.
+   *
+   *  This is what the archive is FOR -- the label is a 2018 -> 2024 transition
+   *  and the only way to call one is to see both dates at the same place -- so
+   *  it is now what turning the archive on does, rather than a button the
+   *  interpreter has to know to press afterwards. Pressing it is still how you
+   *  get back here after stepping the releases around.
+   *
+   *  Both stages run: release dates immediately, so it is instant, then
+   *  `wbSnapRefine` moves each side to the release whose *capture* date at this
+   *  point is nearest its target. */
+  /** Re-pick A and B by RELEASE date from the CURRENT view, and nothing else.
+   *
+   *  Split out from `wbSnapToTargets` because a point change must do this and
+   *  must NOT turn the swipe back on: an interpreter who deliberately closed
+   *  the divider to look at one date should not have it reopened by pressing
+   *  Enter. */
+  function wbPickTargets() {
     wb.idx = wbNearestRelease(WB_TARGET_A);
     wbCmp.idxB = wbNearestRelease(WB_TARGET_B);
     wbCmp.everSet = true;
+    refreshSelects(); applyRelease(); if (wbCmp.on) applyReleaseB();
+  }
+
+  async function wbSnapToTargets() {
+    if (!wb.loaded) { const ok = await ensureLoaded(); if (!ok) return; }
+    wbCmp.everSet = true;
     if (!cmpBox.checked) { cmpBox.checked = true; cmpBox.dispatchEvent(new Event('change')); }
-    refreshSelects(); applyRelease(); applyReleaseB();
+    wbPickTargets();
     wbSnapRefine();
-  });
+  }
+  wb.snapToTargets = wbSnapToTargets;
+
+  snapBtn.addEventListener('click', wbSnapToTargets);
 
   let refineGen = 0;
   async function wbSnapRefine() {
@@ -3465,7 +3728,7 @@ function initWayback() {
           wbFetchMeta(wb.releases[i], pt).catch(() => null)));
         wave.forEach((i, k) => {
           const m = metas[k];
-          const iso = (m && /^\d{4}-\d{2}-\d{2}$/.test(m.date || '')) ? m.date : null;
+          const iso = wbIso(m);
           if (!iso) return;
           const g = Math.abs(wbGapYears(iso, target));
           if (g < pickGap) { pickGap = g; pick = i; }
@@ -3485,17 +3748,23 @@ function initWayback() {
   }
   wb.snapRefine = wbSnapRefine;
 
-  wb.onPointChange = () => {
+  wb.onPointChange = async () => {
     // Before the early return: metadata for the point we just left is waste
     // whether or not the archive is switched on, and it is waste in front of
     // the new point's tiles, sprites and dense sidecar.
     wbMetaCancelPending();
     if (!wb.on) return;
     queueWbMeta();
-    if (wb.localOnly) applyLocalFilter();
     // A new point is a new place: the release that was nearest 2018's imagery
-    // there may be serving 2011 here.
-    if (wbCmp.everSet) wbSnapRefine();
+    // there may be serving 2011 here. Same two passes as the turn-on -- pick by
+    // release date immediately so the new point has its endpoints at once, then
+    // find out which releases actually hold imagery HERE (a new answer at every
+    // point, and a few seconds of tilemap walk) and pick again inside those.
+    if (wbCmp.everSet) { wbPickTargets(); wbSnapRefine(); }
+    if (wb.localOnly) {
+      await applyLocalFilter();
+      if (wb.on && wbCmp.everSet) { wbPickTargets(); wbSnapRefine(); }
+    }
   };
 
   // Click-to-inspect, kept apart from the point. What the record says about the
@@ -4978,6 +5247,11 @@ function eeSelectLayer(key) {
     b.classList.toggle('on', b.dataset.ee === eeActive.key));
   eeClearLayer();
   renderEELegend();
+  // And the same argument one level up: a 70%-opaque global class raster over
+  // a 0.5 m aerial survey is not two readings either. Picking a layer turns the
+  // archive off, so the ground under it is the 10 m basemap it can actually be
+  // compared against; clearing the last one hands the map back to the basemap.
+  useMapSource(eeActive.key ? 'ee' : 'base');
   if (eeActive.key) eeShowLayer();
 }
 
@@ -5180,6 +5454,11 @@ function eeDropLayers() {
   eeClearLayer();
   document.querySelectorAll('[data-ee]').forEach(b => b.classList.remove('on'));
   renderEELegend();
+  // Re-authorising against a different project drops the layers from under the
+  // interpreter, so the tracked source must stop claiming one is on the map.
+  // Not when `useMapSource` is the caller -- it is mid-switch and about to set
+  // the real answer itself.
+  if (!mapSourceBusy && mapSource === 'ee') mapSource = 'base';
 }
 
 /** Called from goTo: the overlay follows the point rather than being minted
@@ -6712,7 +6991,7 @@ function paintSprite(strip, url, n) {
     if (!cell.querySelector('.chip-zoom')) {
       const b = document.createElement('button');
       b.className = 'chip-zoom';
-      b.title = 'Enlarge (←/→ step years)';
+      b.title = 'Enlarge — ←/→ step years, Space plays them as a film';
       b.setAttribute('aria-label',
         'Enlarge the ' + cell.dataset.year + ' chip');
       b.textContent = '⤢';
@@ -7030,7 +7309,7 @@ function loadOneChip(p, year, gen) {
         done = true; clearTimeout(timer);
         cell.innerHTML = '<span class="yr">' + year + '</span>'
           + '<button class="chip-zoom" aria-label="Enlarge this annual image"'
-          + ' title="Enlarge (←/→ step years)">⤢</button>';
+          + ' title="Enlarge — ←/→ step years, Space plays them as a film">⤢</button>';
         cell.insertBefore(img, cell.firstChild);
         cell.querySelector('.chip-zoom').addEventListener('click', ev => {
           ev.stopPropagation(); openLightbox(year);
@@ -7062,6 +7341,20 @@ function applyChipVis() {
   renderChips(p);
   const leg = $('chip-legend');
   if (leg) leg.innerHTML = chipLegendHTML();
+  // The lightbox holds one decoded frame per year, and the scheme and the
+  // width are both in the key of what a frame IS. Changing either while a year
+  // is enlarged has to drop them, or the new scheme's caption sits over the old
+  // scheme's bands.
+  if (lightboxOpen()) {
+    lbKey = lbFrameKey();
+    lbDropFrames();
+    // The ruler too, and not just its `on` mark: which years have no composite
+    // is read through `evVisColor`, which depends on the scheme -- an index can
+    // be undefined at a year where the three-band mix is fine.
+    lbRuler();
+    renderLightbox();
+    lbPrefetch();
+  }
 }
 
 function chipLegendHTML() {
@@ -7110,25 +7403,98 @@ function buildChipControls() {
 // It owns ←/→ while it is up; initKeys defers to lightboxOpen(). Point
 // navigation is on the same keys and stepping to the next point while looking
 // at an enlarged 2019 chip is not what anybody meant.
+//
+// WHY THIS IS A FRAME STACK AND NOT ONE <img>
+//
+// The task is a 2018 -> 2024 transition and the way a human reads a transition
+// out of nine annual pictures is by FLICKING BETWEEN THEM. One <img> cannot do
+// that. The old version, on every step:
+//
+//   1. `img.removeAttribute('src')`      — blanked the picture,
+//   2. showed the baked sprite slice     — at a different SIZE, so the stage,
+//                                          the caption and the buttons moved,
+//   3. `img.src = url; reveal()`         — revealed the img the moment the src
+//                                          was ASSIGNED, i.e. before a single
+//                                          byte of it had decoded, so the
+//                                          stage went black,
+//   4. and did it twice                  — the capped 176 px chip, then the
+//                                          512 px full composite over the top.
+//
+// Four repaints and two reflows per arrow press, and stepping back to a year
+// already looked at re-ran all of it. That is the "they do not switch
+// smoothly" — none of it was Earth Engine being slow.
+//
+// Now: a fixed square stage, the baked sprite underneath (always correct for
+// the current year, one `background-position`, no network), and one decoded
+// <img> per year kept on top of it. A year is shown by adding a class. A year
+// already looked at is instant and a year never looked at shows its sprite
+// slice until its composite has DECODED — never a blank. Which is also what
+// makes `play` possible: the frames are prefetched in play order, so the film
+// runs off memory.
 let lbYears = [], lbIdx = 0, lbPoint = null;
+
+//: year -> the <img> for it under `lbKey`. Kept until the key changes, because
+//: flicking back and forth between two years is the whole reading technique.
+const lbFrames = new Map();
+//: Everything that makes a frame a different picture. The point, the scheme and
+//: the width all change what a year LOOKS like, and a frame cached across any
+//: of them would show the previous point's ground or the previous scheme's
+//: bands under this year's caption.
+let lbKey = '';
 
 function lightboxOpen() {
   const el = $('lightbox');
   return !!(el && el.classList.contains('on'));
 }
 
+/** The key the frame stack is valid for. `chipScope` already carries the
+ *  campaign, the batch, the id and the coordinates. */
+function lbFrameKey() {
+  return (lbPoint ? chipScope(lbPoint) : '') + '|' + chipVis.combo
+       + '|' + chipVis.w;
+}
+
+function lbDropFrames() {
+  for (const img of lbFrames.values()) { img.onload = img.onerror = null; img.remove(); }
+  lbFrames.clear();
+  lbAsked.clear();
+  const layers = $('lb-layers');
+  if (layers) layers.innerHTML = '';
+}
+
+/** Is this year's composite known to be missing?
+ *
+ *  Same test the strip's `nodata` cell uses, and for the same reason: a year
+ *  with no cloud-free growing-season composite renders BLACK, which reads as a
+ *  broken image rather than as an absence. The film must not spend a frame on
+ *  it and the ruler must not offer it. Only when there is a baked timeline to
+ *  read; with no evidence the app knows nothing and must not guess. */
+function lbNoData(year) {
+  if (!lbPoint) return false;
+  const t = evTimeline(lbPoint);
+  if (!(t && t.bands)) return false;
+  const i = lbYears.indexOf(year);
+  if (i < 0) return false;
+  return !evVisColor(lbPoint, t, i);
+}
+
 let lbReturnFocus = null;
 function openLightbox(year) {
   const p = S.points[S.i];
   if (!p) return;
+  // A different point, scheme or width invalidates every frame held.
   lbPoint = p;
   lbYears = evYears();
+  const key = lbFrameKey();
+  if (key !== lbKey) { lbDropFrames(); lbKey = key; }
   lbIdx = Math.max(0, lbYears.indexOf(year));
   // Where the keyboard was, so closing puts it back on the chip it came from
   // rather than at the top of the document.
   lbReturnFocus = document.activeElement;
   $('lightbox').classList.add('on');
+  lbRuler();
   renderLightbox();
+  lbPrefetch();
   // The panel stays visible beside the chip, so the readings the lightbox
   // drives have to be the part of it that is showing -- otherwise this depends
   // on wherever the interpreter happened to leave the scroller.
@@ -7144,63 +7510,346 @@ function openLightbox(year) {
   if (close) close.focus();
 }
 
+/** Put `year`'s frame on screen, or leave the sprite showing if it has none
+ *  yet. Never blanks the stage and never waits. */
+function lbShowFrame(year) {
+  const img = lbFrames.get(year);
+  const ready = !!(img && img.complete && img.naturalWidth);
+  if (ready) img.classList.add('on');
+  for (const [y, el] of lbFrames) {
+    if (y === year || !el.classList.contains('on')) continue;
+    // While the incoming frame fades in it is painted ON TOP (z-index), so the
+    // outgoing one is dropped after the fade rather than with it -- dropping it
+    // now would show the sprite through the gap. With no incoming frame to
+    // cover it, though, the sprite IS the right picture for this year and the
+    // outgoing frame is the wrong one, so it goes immediately.
+    if (!ready || $('lightbox').classList.contains('playing')) {
+      el.classList.remove('on');
+      continue;
+    }
+    // Guarded, because stepping away and straight back inside the fade would
+    // otherwise have the first step's timer switch off the frame the second
+    // step just switched on -- a blank flash, which is the fault being fixed.
+    setTimeout(() => {
+      if (lbYears[lbIdx] !== y) el.classList.remove('on');
+    }, 140);
+  }
+}
+
+//: year -> the strongest request made for it, `'cap'` or `'full'`. It is the
+//: ASK, not what landed (the frame's own `dataset.full` is that), and it is
+//: what stops the same year being requested twice — the prefetch chain, the
+//: current-year upgrade and a re-entered `renderLightbox` all want the same
+//: years at the same moment, and the frame map cannot answer "already in
+//: flight" because a frame is only put in it once it has decoded.
+const lbAsked = new Map();
+
+/** Fetch one year at lightbox size into its own <img> and decode it before it
+ *  is ever shown. Resolves either way; the sprite is the fallback and it is
+ *  already on screen.
+ *
+ *  CAPPED OR UNCAPPED, and this is a cost decision that the film changed.
+ *
+ *  The old lightbox fetched the **uncapped** composite, on the AL9 principle
+ *  that an interpreter who has deliberately enlarged a year is waiting on
+ *  purpose. That is still right for the year on screen. It is not right for
+ *  nine: AL9 timed uncapped chips at 15-41 s each against 5-6 s for the
+ *  12-scene cap, so prefetching nine uncapped composites would spend minutes
+ *  of Earth Engine per lightbox open, most of it on years nobody looks at, and
+ *  the film could not start until they landed.
+ *
+ *  And the cap costs almost nothing to look at — AL9 measured a **median 0.002
+ *  relative reflectance difference at the plot** over 10 points. So the film
+ *  runs on capped frames, and only the year being READ is upgraded to the
+ *  uncapped composite, replacing its own frame in place when it decodes.
+ */
+function lbLoadFrame(year, opts) {
+  const full = !!(opts && opts.full);
+  if (!EE.ready || !lbPoint || lbNoData(year)) return Promise.resolve();
+  // Already asked for, at least as strongly: nothing to do. An uncapped ask
+  // over a capped one falls through and replaces the frame when it lands.
+  const asked = lbAsked.get(year);
+  if (asked === 'full' || (asked && !full)) return Promise.resolve();
+  lbAsked.set(year, full ? 'full' : 'cap');
+  const key = lbKey, p = lbPoint;
+  const o = full ? { full: true, dim: CHIP_DIM_BIG } : { dim: CHIP_DIM_BIG };
+  return chipUrl(p, year, o).then(url => {
+    if (key !== lbKey) return;
+    const img = new Image();
+    img.alt = 'Sentinel-2 ' + year;
+    img.decoding = 'async';
+    // `lbAsked` says an uncapped request is OUT; this says one arrived. The
+    // caption needs the second, or a capped frame reads as the uncapped one
+    // for as long as the upgrade is in flight.
+    if (full) img.dataset.full = '1';
+    return new Promise(done => {
+      img.onload = () => {
+        if (key !== lbKey) return done();
+        // Swap, rather than add: an upgrade replaces the capped frame for this
+        // year, and leaving the old one in the layer stack would leave two
+        // images for one year both eligible to be shown.
+        const old = lbFrames.get(year);
+        lbFrames.set(year, img);
+        $('lb-layers').appendChild(img);
+        // If this is the year on screen, it replaces what is under it now. If
+        // it is not, it waits in memory and costs nothing when its turn comes.
+        if (lbYears[lbIdx] === year) { lbShowFrame(year); lbCaption(); }
+        // The outgoing frame goes AFTER the replacement is up, and after its
+        // fade. Removing it first leaves a gap in which neither is painted and
+        // the sprite flashes through -- the same fault as the old blank-then-
+        // reveal, reintroduced by the upgrade. `lbShowFrame` cannot retire it,
+        // because it is no longer the frame this year maps to.
+        if (old && old !== img) {
+          old.onload = old.onerror = null;
+          if (old.classList.contains('on')) setTimeout(() => old.remove(), 160);
+          else old.remove();
+        }
+        done();
+      };
+      // Let a later ask try again, rather than leaving the year claimed by a
+      // request that failed. The frame already on screen, if any, stays.
+      img.onerror = () => { lbAsked.delete(year); done(); };
+      img.src = url;
+    });
+  }).catch(() => { lbAsked.delete(year); });
+}
+
+//: Two at a time. Nine uncapped 512 px composites asked for at once is the
+//: same mistake §AL9 measured on the strip: they all pile up at Earth Engine's
+//: concurrency throttle and the one the interpreter is LOOKING at arrives last.
+const LB_PREFETCH_CONCURRENCY = 2;
+//: How long a year may hold a prefetch slot. `chipUrl` has no timeout of its
+//: own -- an uncapped composite that Earth Engine never answers for would hold
+//: one of the two slots for the rest of the session and, with both held, the
+//: rest of the film would never be asked for at all. This frees the SLOT and
+//: not the request: if the picture does arrive later it is still appended and
+//: still used.
+const LB_SLOT_MS = 60000;
+let lbPrefetchGen = 0;
+
+function lbSlot(promise) {
+  return new Promise(done => {
+    const timer = setTimeout(done, LB_SLOT_MS);
+    promise.then(() => { clearTimeout(timer); done(); },
+                 () => { clearTimeout(timer); done(); });
+  });
+}
+
+/** Warm the frames in play order from where the interpreter is, so the next
+ *  arrow press and the next frame of the film are the ones already paid for.
+ *
+ *  This is `warm_ts_cache.py` and `build_batch_chips.py` one more time -- pay
+ *  Earth Engine before the human does -- except the thing being warmed is a
+ *  decoded bitmap in this tab. */
+function lbPrefetch() {
+  const gen = ++lbPrefetchGen, key = lbKey;
+  const order = [];
+  for (let k = 0; k < lbYears.length; k++)
+    order.push(lbYears[(lbIdx + k) % lbYears.length]);
+  let next = 0;
+  const pump = () => {
+    if (gen !== lbPrefetchGen || key !== lbKey || !lightboxOpen()) return;
+    if (next >= order.length) return;
+    const y = order[next++];
+    lbSlot(lbLoadFrame(y)).then(pump);
+  };
+  for (let i = 0; i < LB_PREFETCH_CONCURRENCY; i++) pump();
+}
+
+/** How much of the film is in memory, as a fraction of the years it can show. */
+function lbReady() {
+  const want = lbYears.filter(y => !lbNoData(y));
+  if (!want.length) return { have: 0, want: 0 };
+  return { have: want.filter(y => {
+    const f = lbFrames.get(y); return !!(f && f.complete && f.naturalWidth);
+  }).length, want: want.length };
+}
+
+function lbCaption() {
+  const y = lbYears[lbIdx];
+  const frame = lbFrames.get(y);
+  const live = !!(frame && frame.complete && frame.naturalWidth);
+  const head = 'Sentinel-2 ' + y + '  ·  ' + chipVis.combo
+             + '  ·  ' + chipVis.w + ' m view  ·  ';
+  if (lbNoData(y)) {
+    $('lb-cap').textContent = head + 'no cloud-free composite in the growing season';
+    return;
+  }
+  // The one state with nothing on the stage at all: the width or the scheme is
+  // outside what was baked AND Earth Engine is not connected, so there is no
+  // sprite to stand in and nothing to fetch. Say so rather than leaving a black
+  // square captioned "prepared image".
+  if (!live && !chipSpriteUrl(lbPoint) && !EE.ready) {
+    $('lb-cap').textContent = head + 'unavailable — '
+      + (chipBakeMiss(lbPoint) || 'no prepared image at this width')
+      + ', and Earth Engine is not connected';
+    return;
+  }
+  const landedFull = !!(frame && frame.dataset.full);
+  let tail = live ? (landedFull ? 'seasonal composite'
+                                : 'seasonal composite (12 scenes)')
+                  : 'prepared image';
+  if (live && !landedFull && EE.ready) tail += ' · refining…';
+  if (!live && EE.ready) {
+    const r = lbReady();
+    tail += ' · fetching the full composite'
+          + (r.want ? ' (' + r.have + '/' + r.want + ' years ready)' : '') + '…';
+  }
+  $('lb-cap').textContent = head + tail;
+}
+
+/** The year ruler under the buttons. Rebuilt only when the year list changes;
+ *  stepping just moves the `on` class. */
+function lbRuler() {
+  const el = $('lb-ticks');
+  if (!el) return;
+  el.innerHTML = lbYears.map(y =>
+    '<button data-year="' + y + '"'
+    + (lbNoData(y) ? ' class="nodata" disabled' : '')
+    + ' title="' + esc(lbNoData(y)
+        ? y + ' — no cloud-free composite in the growing season'
+        : 'Show ' + y) + '">' + y + '</button>').join('');
+  el.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      const i = lbYears.indexOf(Number(b.dataset.year));
+      if (i < 0) return;
+      lbPause();
+      lbIdx = i;
+      renderLightbox();
+      lbPrefetch();
+    });
+  });
+  lbRulerMark();
+}
+
+function lbRulerMark() {
+  const el = $('lb-ticks');
+  if (!el) return;
+  el.querySelectorAll('button').forEach(b =>
+    b.classList.toggle('on', Number(b.dataset.year) === lbYears[lbIdx]));
+}
+
 function renderLightbox() {
   const y = lbYears[lbIdx];
-  const cap = $('lb-cap');
-  cap.textContent = 'Sentinel-2 ' + y + '  ·  ' + chipVis.combo
-    + '  ·  ' + chipVis.w + ' m view  ·  seasonal composite · loading…';
-  const img = $('lb-img');
   const slice = $('lb-slice');
-  img.removeAttribute('src');
-  // A baked sprite slice, scaled up, is on screen in nothing flat. The live
-  // full-composite version replaces it when it arrives; with Earth Engine never
-  // connected it is what the lightbox shows, instead of "unavailable" about a
-  // picture the app is already holding.
+  // The sprite, positioned on this year. Instant, offline, and the reason the
+  // stage is never blank. It stays underneath the frames for the whole
+  // session rather than being hidden and re-shown.
   const sprite = chipSpriteUrl(lbPoint);
   const n = lbYears.length;
   if (sprite) {
-    slice.style.display = '';
-    img.style.display = 'none';
     slice.style.backgroundImage = 'url("' + sprite + '")';
     slice.style.backgroundSize = (n * 100) + '% 100%';
     slice.style.backgroundPosition =
       (n > 1 ? (lbIdx / (n - 1)) * 100 : 0) + '% 0';
-    cap.textContent = 'Sentinel-2 ' + y + '  ·  ' + chipVis.combo
-      + '  ·  ' + chipVis.w + ' m view  ·  prepared image'
-      + (EE.ready ? ' · fetching the full composite…' : '');
   } else {
-    slice.style.display = 'none';
-    img.style.display = '';
+    slice.style.backgroundImage = '';
   }
-  if (!EE.ready) { selectEvYear(y, { quiet: true }); return; }
-  const reveal = () => { slice.style.display = 'none'; img.style.display = ''; };
-  // The strip's capped chip first, so something is on screen immediately, then
-  // the full-composite version at four times the size over the top of it.
-  chipUrl(lbPoint, y).then(url => {
-    if (lbYears[lbIdx] === y && !img.getAttribute('src')) { img.src = url; reveal(); }
-  }).catch(() => {});
-  chipUrl(lbPoint, y, { full: true, dim: CHIP_DIM_BIG }).then(url => {
-    if (lbYears[lbIdx] !== y) return;
-    img.src = url;
-    reveal();
-    cap.textContent = 'Sentinel-2 ' + y + '  ·  ' + chipVis.combo
-      + '  ·  ' + chipVis.w + ' m view  ·  seasonal composite';
-  }).catch(() => {
-    if (lbYears[lbIdx] === y && !img.getAttribute('src') && !sprite)
-      cap.textContent = 'Sentinel-2 ' + y + ' — unavailable';
-  });
+  lbShowFrame(y);
+  lbRulerMark();
+  lbCaption();
   selectEvYear(y, { quiet: true });
+  // The year on screen, at full quality -- but NOT while the film is running.
+  // A year the film passes through is not a year being read, and upgrading
+  // each one in turn would request all nine uncapped composites over a single
+  // play-through, which is exactly the spend the capped prefetch exists to
+  // avoid. It would also put that work in front of the frames the film still
+  // needs. `lbPause` asks for the year it stops on, which is the one the
+  // interpreter has actually chosen to look at.
+  //
+  // `lbLoadFrame` is a no-op if this year is already the uncapped one, so
+  // stepping back and forth costs nothing; where it holds only the capped
+  // frame, the upgrade replaces it in place and the picture never goes away
+  // while that happens.
+  if (EE.ready && !lbPlaying()) lbLoadFrame(y, { full: true });
 }
 
 function lbStep(delta) {
   if (!lbYears.length) return;
-  lbIdx = (lbIdx + delta + lbYears.length) % lbYears.length;
+  // Skip the years that have no composite: the film must not stop on a frame
+  // that is black by construction, and ←/→ should not either.
+  for (let k = 0; k < lbYears.length; k++) {
+    lbIdx = (lbIdx + delta + lbYears.length) % lbYears.length;
+    if (!lbNoData(lbYears[lbIdx])) break;
+  }
   renderLightbox();
 }
 
+// ── play ────────────────────────────────────────────────────────────────────
+// The reading this app asks for is "what changed between 2018 and 2024", and
+// the instrument for that is a loop, not a pair of buttons. Nine annual frames
+// at ~0.7 s is a filmstrip: a new house appears and stays, a clear-cut appears
+// and greens back, and a wet year that only LOOKS like a change flickers once
+// and goes away. Stepping by hand cannot show the difference between the last
+// two, because the eye has to hold two pictures a second apart to see it.
+//
+// It is a setTimeout CHAIN and not setInterval: the interval keeps firing while
+// a frame is still decoding and the film runs ahead of its pictures. Each tick
+// is scheduled after the last one has been put on screen.
+let lbTimer = null;
+const LB_SPEED_MIN = 200, LB_SPEED_MAX = 2000;
+//: Not part of `chipVis` and not in the deep link: the scheme and the width
+//: decide what the picture IS and are worth sending to a colleague, whereas a
+//: reading pace is the reader's own.
+const LB_SPEED_STORE = 'recover-labels:lb-speed';
+let lbSpeed = 700;
+
+function lbPlaying() { return lbTimer !== null; }
+
+function lbSetSpeed(ms) {
+  lbSpeed = Math.min(LB_SPEED_MAX, Math.max(LB_SPEED_MIN, Number(ms) || 700));
+  const val = $('lb-speed-val');
+  if (val) val.textContent = (lbSpeed / 1000).toFixed(1) + ' s';
+  const sl = $('lb-speed');
+  if (sl && Number(sl.value) !== lbSpeed) sl.value = String(lbSpeed);
+  try { localStorage.setItem(LB_SPEED_STORE, String(lbSpeed)); }
+  catch (e) { /* private window: the default is fine */ }
+}
+
+function lbPlayLabel() {
+  const b = $('lb-play');
+  if (!b) return;
+  b.textContent = lbPlaying() ? '❙❙ pause' : '▶ play';
+  b.setAttribute('aria-pressed', lbPlaying() ? 'true' : 'false');
+  b.title = lbPlaying() ? 'Stop the film (Space or P)'
+                        : 'Play the years as a film (Space or P)';
+  $('lightbox').classList.toggle('playing', lbPlaying());
+}
+
+function lbPlay() {
+  if (lbPlaying() || lbYears.length < 2) return;
+  const tick = () => {
+    if (!lightboxOpen()) { lbPause(); return; }
+    lbStep(1);
+    lbTimer = setTimeout(tick, lbSpeed);
+  };
+  lbTimer = setTimeout(tick, lbSpeed);
+  lbPlayLabel();
+  // Playing is the one moment the whole film is wanted, so ask for all of it.
+  lbPrefetch();
+}
+
+function lbPause() {
+  const was = lbTimer !== null;
+  if (was) { clearTimeout(lbTimer); lbTimer = null; }
+  lbPlayLabel();
+  // Stopping on a year IS choosing to read it, so that is the moment the
+  // uncapped composite is worth asking for -- `renderLightbox` deliberately
+  // does not, for every year the film passes through.
+  if (was && EE.ready && lightboxOpen()) {
+    lbLoadFrame(lbYears[lbIdx], { full: true });
+    lbCaption();
+  }
+}
+
+function lbTogglePlay() { lbPlaying() ? lbPause() : lbPlay(); }
+
 function closeLightbox() {
+  lbPause();
   $('lightbox').classList.remove('on');
   document.body.classList.remove('lb-open');
+  // The frames are kept: closing and re-opening the same point under the same
+  // scheme is common and re-fetching nine composites for it is not.
   const back = lbReturnFocus;
   lbReturnFocus = null;
   if (back && back.isConnected && back.offsetParent !== null) back.focus();
@@ -7209,16 +7858,36 @@ function closeLightbox() {
 function initLightbox() {
   const lb = $('lightbox');
   if (!lb) return;
-  $('lb-prev').addEventListener('click', () => lbStep(-1));
-  $('lb-next').addEventListener('click', () => lbStep(1));
+  // A manual step is a decision to look at one year, so it stops the film --
+  // the alternative is the picture moving out from under the button that was
+  // just pressed.
+  $('lb-prev').addEventListener('click', () => { lbPause(); lbStep(-1); });
+  $('lb-next').addEventListener('click', () => { lbPause(); lbStep(1); });
+  $('lb-play').addEventListener('click', lbTogglePlay);
   $('lb-close').addEventListener('click', closeLightbox);
   lb.addEventListener('click', e => { if (e.target.id === 'lightbox') closeLightbox(); });
+  let saved = null;
+  try { saved = localStorage.getItem(LB_SPEED_STORE); } catch (e) {}
+  lbSetSpeed(saved || lbSpeed);
+  const sl = $('lb-speed');
+  if (sl) {
+    sl.addEventListener('input', e => lbSetSpeed(e.target.value));
+    // The slider owns ←/→ once it has the keyboard, and there they mean
+    // "faster/slower", not "step a year". Let it have them.
+    sl.addEventListener('keydown', e => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') e.stopPropagation();
+    });
+  }
+  lbPlayLabel();
   // A modal that lets Tab walk out into the page behind it is a modal in
-  // appearance only. Four controls, so the cycle is written out rather than
-  // computed.
+  // appearance only.
   lb.addEventListener('keydown', e => {
     if (e.key !== 'Tab') return;
-    const stops = [...lb.querySelectorAll('button')].filter(b => b.offsetParent !== null);
+    // `:not(:disabled)` matters now that the year ruler disables the years with
+    // no composite: a disabled button is not focusable, and one of them being
+    // first or last in the cycle would send Tab somewhere that cannot take it.
+    const stops = [...lb.querySelectorAll('button:not(:disabled), input')]
+      .filter(b => b.offsetParent !== null);
     if (!stops.length) return;
     const first = stops[0], last = stops[stops.length - 1];
     if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
@@ -7476,8 +8145,15 @@ function initKeys() {
     // back into the after-the-fact nag the gate replaced.
     if (lightboxOpen()) {
       if (e.key === 'Escape')     { e.preventDefault(); closeLightbox(); return; }
-      if (e.key === 'ArrowLeft')  { e.preventDefault(); lbStep(-1); return; }
-      if (e.key === 'ArrowRight') { e.preventDefault(); lbStep(1); return; }
+      // A manual step stops the film, for the same reason the buttons do.
+      if (e.key === 'ArrowLeft')  { e.preventDefault(); lbPause(); lbStep(-1); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); lbPause(); lbStep(1); return; }
+      // Space is play/pause in every film there has ever been, and it wins
+      // over activating the focused button here: Esc closes, Enter still
+      // activates, and the lightbox exists to be flicked through.
+      if (e.key === ' ' || e.key === 'p' || e.key === 'P') {
+        e.preventDefault(); lbTogglePlay(); return;
+      }
       return;
     }
     if (e.key === 'Escape') {
@@ -7570,35 +8246,107 @@ function initChrome() {
   // `map.resize()` and a localStorage write on every pointermove is a full
   // MapLibre reflow per mouse sample. The resize is throttled to a frame and the
   // width is persisted once, on release.
+  //
+  // THE WIDTH IS A FRACTION OF THE WINDOW, NOT A NUMBER OF PIXELS.
+  //
+  // It was a flat 430 px default with a flat [320, 680] drag clamp, and a
+  // stored width restored verbatim. That is three separate ways to be wrong
+  // about the screen it is opened on:
+  //
+  //   * 430 px is a third of a 1280 laptop lid and an eighth of a 4K desktop —
+  //     the same panel is cramped on one and lost on the other;
+  //   * a width dragged out to 680 on a large monitor comes back on a 1366 px
+  //     laptop and takes HALF the window, leaving the map — the instrument —
+  //     as the smaller half, and squeezing the chip lightbox with it (it is
+  //     positioned off `--panel-w`);
+  //   * nothing re-ran on `resize`, so the same thing happened when a window
+  //     was simply made smaller, or a laptop undocked from its second screen.
+  //
+  // So: bounds derived from the viewport, a preferred width at 32% of it, and
+  // the stored preference CLAMPED to what the current window can afford rather
+  // than overwritten — undocking must not lose the width chosen for the dock.
   const grip = $('panel-grip');
+
+  /** What this window can afford to give the panel.
+   *
+   *  The map is the instrument and the panel is the form beside it, so the
+   *  panel never takes more than 46% however wide the screen. 320 px is the
+   *  floor the two three-button class rows need, and it yields below ~700 px
+   *  of window because a form that cannot be reached at all is worse than a
+   *  cramped one. */
+  function panelBounds() {
+    const vw = window.innerWidth;
+    const max = Math.max(260, Math.min(680, Math.round(vw * 0.46)));
+    const min = Math.min(320, max);
+    const pref = Math.max(min, Math.min(max, Math.round(vw * 0.32)));
+    return { min, max, pref };
+  }
+
+  function clampPanel(w) {
+    const b = panelBounds();
+    return Math.max(b.min, Math.min(b.max, Math.round(w)));
+  }
+
+  /** Put a width on screen. `remember` is false for a re-clamp: the number the
+   *  interpreter dragged stays stored, so a window made small and then large
+   *  again comes back to the width they chose rather than to the squeezed one. */
+  function setPanelWidth(w, remember) {
+    const px = clampPanel(w);
+    document.documentElement.style.setProperty('--panel-w', px + 'px');
+    if (remember) {
+      try { localStorage.setItem('recover-labels:panel-w', String(px)); }
+      catch (e) { /* private mode: the choice lasts the session */ }
+    }
+    return px;
+  }
+
+  function relayoutForPanel() {
+    applyMapPad();
+    if (map) map.resize();
+    // Only if it is on screen. `showCompare(true)` resizes it on the way in,
+    // so a hidden map does not need to track the panel width.
+    if (wbCmp.map && wbCmp.on) wbCmp.map.resize();
+  }
+
   let dragging = false, pendingW = null, raf = 0;
   grip.addEventListener('pointerdown', e => {
     dragging = true; grip.setPointerCapture(e.pointerId); e.preventDefault();
   });
   window.addEventListener('pointermove', e => {
     if (!dragging) return;
-    pendingW = Math.max(320, Math.min(680, window.innerWidth - e.clientX - 12));
-    document.documentElement.style.setProperty('--panel-w', pendingW + 'px');
-    if (!raf) raf = requestAnimationFrame(() => {
-      raf = 0;
-      applyMapPad();
-      if (map) map.resize();
-      // Only if it is on screen. `showCompare(true)` resizes it on the way in,
-      // so a hidden map does not need to track the panel width.
-      if (wbCmp.map && wbCmp.on) wbCmp.map.resize();
-    });
+    pendingW = setPanelWidth(window.innerWidth - e.clientX - 12, false);
+    if (!raf) raf = requestAnimationFrame(() => { raf = 0; relayoutForPanel(); });
   });
   window.addEventListener('pointerup', () => {
     if (!dragging) return;
     dragging = false;
-    if (pendingW != null) {
-      try { localStorage.setItem('recover-labels:panel-w', pendingW); }
-      catch (e) { /* private mode */ }
-      pendingW = null;
-    }
+    if (pendingW != null) { setPanelWidth(pendingW, true); pendingW = null; }
   });
-  const saved = localStorage.getItem('recover-labels:panel-w');
-  if (saved) document.documentElement.style.setProperty('--panel-w', saved + 'px');
+  //: A width nobody can find their way back from is a width they will not try.
+  grip.addEventListener('dblclick', () => {
+    setPanelWidth(panelBounds().pref, true);
+    relayoutForPanel();
+  });
+  grip.title = 'Drag to resize the panel · double-click to fit this screen';
+
+  const saved = Number(localStorage.getItem('recover-labels:panel-w'));
+  // Clamped, not trusted: see above. With nothing stored, the preferred width
+  // is a share of THIS screen rather than the same 430 px everywhere.
+  setPanelWidth(saved > 0 ? saved : panelBounds().pref, false);
+  // Re-clamp whenever the window changes shape. Debounced to a frame: a
+  // pointer-driven window resize fires this continuously, and each one is a
+  // MapLibre reflow.
+  let resizeRaf = 0;
+  window.addEventListener('resize', () => {
+    if (resizeRaf) return;
+    resizeRaf = requestAnimationFrame(() => {
+      resizeRaf = 0;
+      const want = Number(localStorage.getItem('recover-labels:panel-w'))
+                || panelBounds().pref;
+      setPanelWidth(want, false);
+      relayoutForPanel();
+    });
+  });
   // The map may already be up by the time a stored width is restored.
   applyMapPad();
 

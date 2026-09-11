@@ -83,6 +83,17 @@
     --glass-blur: blur(14px) saturate(94%);
     --glass-edge: rgba(0,0,0,.08);
     --veil: rgba(233,233,231,.94); --sw-edge: rgba(0,0,0,.15);
+
+    /* THE PANEL WIDTH, and it is a share of the window rather than a number.
+       `app.js` overwrites this with a px value as soon as it runs -- clamped to
+       what the window can afford and honouring a dragged width -- but the
+       declaration here is what the FIRST PAINT uses, so the panel does not
+       land at a fixed 430 px and then jump. Every rule that positions off the
+       panel (the lightbox, the map controls, the swipe) reads this one token.
+       Kept in step with `panelBounds()` in app.js: 32% of the window, floored
+       at 320 px for the two three-button class rows, capped at 680 because a
+       form does not get better past it and the map is the instrument. */
+    --panel-w: clamp(320px, 32vw, 680px);
     /* The quiet control fill: translucent white on the warm ground, with the
        soft hairline. This is the whole low-contrast character. */
     --control: rgba(255,255,255,.55); --control-hover: rgba(255,255,255,.9);
@@ -406,12 +417,33 @@
     background: #fff; color: #333; box-shadow: 0 1px 6px rgba(0,0,0,.4);
     display: flex; align-items: center; justify-content: center;
     font-size: 17px; user-select: none; }
-  .wb-swipe-label { position: absolute; bottom: 34px; z-index: 2;
-    pointer-events: none; background: rgba(17,17,17,.78); color: #fff;
-    font-size: 12px; font-weight: 500; padding: 3px 9px; border-radius: 5px; }
-  .wb-swipe-label.a { left: 10px; }
-  .wb-swipe-label.b { right: 10px; }
-  #flicker-hint { position: absolute; bottom: 10px; left: 50%;
+  /* ONE ROW, TOP-LEFT, and both dates in it.
+     These are children of `#map`, which is FULL WIDTH -- the panel is a layer
+     over it, not a second pane -- so `left: 10px` / `right: 10px` put the
+     right-hand date underneath the PANEL and the left one underneath the chip
+     FILMSTRIP. Measured at 1440x900: label B spanned x 1233-1430 against a
+     panel starting at 967, and `elementFromPoint` at the centre of each
+     returned panel content and a chip cell. The right side's date read as
+     simply missing, which is what it was.
+     The obvious repair -- top edge, each label in its own half -- does not work
+     either: `#ctrl-right` spans x 651-951 over almost the map's full height, so
+     while the Map controls card is open there is no free space in the right
+     half at all. Top-left is the one region that is always clear, `◀` and `▶`
+     say which half each describes, and the pair reads as a pair.
+     z-index 3 is the MAP layer (compare-map 1, divider 2, filmstrip 3, panel 4)
+     -- outranking the panel would only turn "hidden" into "a date pill over
+     the form". */
+  #wb-swipe-labels { position: absolute; top: 14px; left: 56px; z-index: 3;
+    display: flex; gap: 6px; pointer-events: none;
+    max-width: calc(100% - var(--panel-w, 430px) - 80px); }
+  .wb-swipe-label { background: rgba(17,17,17,.78); color: #fff;
+    font-size: 12px; font-weight: 500; padding: 3px 9px; border-radius: 5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0; }
+  /* Under them, and centred on the VISIBLE map rather than on the full-width
+     one it is a child of. The foot of the map is the filmstrip. */
+  #flicker-hint { position: absolute; top: 46px;
+    left: calc((100% - var(--panel-w, 430px)) / 2);
     transform: translateX(-50%); z-index: 3; background: rgba(17,17,17,.72);
     color: #fff; font-size: 12px; padding: 4px 10px; border-radius: 6px;
     pointer-events: none; }
@@ -1024,6 +1056,12 @@
     padding: 3px 11px; cursor: pointer; font-weight: 450; font-size: 12px;
     font-family: inherit; }
 
+  /* A capture date the service gives only to the month or the year is still a
+     usable provenance note, and saying which it is stops it being read as a
+     day. (The other non-answer, "no dated survey", is italic in the same
+     read-out and needs no rule.) */
+  #wb-meta .dim, #wb-click .dim { opacity: .6; }
+
   /* ── chip lightbox ──────────────────────────────────────────────────────
      It owns the arrow keys while it is up; point navigation is on the same two
      keys and stepping to the next point while looking at an enlarged chip is
@@ -1050,20 +1088,73 @@
      the read-out, the call flags and the buttons stay pinned under it, because
      they are what an enlarged year is being read *for*. */
   body.lb-open #panel-head { max-height: 24%; }
-  #lightbox img { max-width: 92%; max-height: 64vh; border-radius: 12px;
-                  background: #111; }
-  /* The baked slice stands in for the img until the live composite lands, so
-     it is sized like one. Chips are square. `pixelated` is deliberate: a
-     176 px cell blown up to 70vh is being magnified 4x and smoothing it makes
-     it read as a soft photograph rather than as the placeholder it is. */
-  #lb-slice { width: min(92%, 64vh); height: min(92%, 64vh);
-    aspect-ratio: 1; border-radius: 12px; background: #111 no-repeat;
-    image-rendering: pixelated; }
+  /* ONE FIXED SQUARE, and every year draws inside it.
+     The placeholder and the composite used to be sized by two different rules
+     -- `min(92%,64vh)` on a div and `max-width:92%/max-height:64vh` on an img
+     -- so each year that landed resized the picture and nudged the caption and
+     the buttons. Stepping four years meant eight reflows. Chips are square by
+     construction (`dimensions:` on a square region), so the stage is square
+     and both fill it. */
+  #lb-stage { position: relative; width: min(92%, 64vh); aspect-ratio: 1;
+    border-radius: 12px; background: #111; overflow: hidden; }
+  /* The baked sprite, under everything. It is correct for the current year the
+     instant the year changes -- one `background-position` -- so there is never
+     a blank stage, with Earth Engine connected or not. `pixelated` is
+     deliberate: a 176 px cell blown up to 64vh is magnified 4x and smoothing it
+     makes it read as a soft photograph rather than as the placeholder it is. */
+  #lb-slice { position: absolute; inset: 0; background: #111 no-repeat;
+    background-size: 100% 100%; image-rendering: pixelated; }
+  #lb-layers { position: absolute; inset: 0; }
+  /* One <img> per year, all kept. A year already looked at costs a class
+     change and no network, which is what makes `play` smooth. The incoming
+     frame fades in ON TOP of the outgoing one (z-index, then the outgoing is
+     dropped once the fade is over), so the sprite underneath never shows through
+     the gap -- a cross-fade that reveals the placeholder mid-way is worse than
+     a hard cut. */
+  #lb-layers img { position: absolute; inset: 0; width: 100%; height: 100%;
+    max-width: none; max-height: none; border-radius: 0; object-fit: contain;
+    opacity: 0; z-index: 1; transition: opacity 110ms linear; }
+  #lb-layers img.on { opacity: 1; z-index: 2; }
+  /* While it is playing, cutting hard is the honest thing: a fade blends two
+     years into a third picture that is not a reading of anything. */
+  #lightbox.playing #lb-layers img { transition: none; }
+  /* There was a `#lightbox img { max-width: 92%; max-height: 64vh }` here, and
+     it is gone rather than overridden: it is the same specificity as
+     `#lb-layers img` and declared after it, so it won -- the frames came back
+     sized by the rule the stage exists to replace. The stage is the only thing
+     that sizes a chip now. */
   #lightbox .lb-cap { color: #fff; font-size: 16px; font-weight: 500; }
-  #lightbox .lb-nav { display: flex; gap: 10px; }
+  #lightbox .lb-nav { display: flex; gap: 10px; align-items: center; }
   #lightbox .lb-nav button, #lightbox .lb-close {
     border: 1px solid #555; background: #1c1c1c; color: #fff; border-radius: 6px;
     padding: 5px 12px; cursor: pointer; font-size: 15px; }
+  #lightbox #lb-play { min-width: 88px; }
+  #lightbox #lb-play[aria-pressed="true"] { border-color: #9ecbff; color: #9ecbff; }
+  #lightbox .lb-speed { display: flex; align-items: center; gap: 6px;
+    color: #ccc; font-size: 13px; }
+  #lightbox .lb-speed input { width: 90px; }
+  #lightbox .lb-speed span { min-width: 34px; }
+  /* The year ruler. During playback the caption is the only thing that moves
+     and it is text; this says where in the nine years the film is, and clicking
+     a tick steps straight to that year.
+     It gets its OWN ground rather than sitting on the 84%-dimmed backdrop: the
+     chip strip is at the foot of the map, directly behind this, and its cells
+     carry year labels of their own -- two rows of years 10 px apart read as one
+     confusing row. */
+  #lightbox .lb-ticks { display: flex; gap: 4px; flex-wrap: wrap;
+    justify-content: center; background: rgba(0,0,0,.72);
+    border-radius: 999px; padding: 5px 9px; }
+  #lightbox .lb-ticks button {
+    border: 1px solid #444; background: #161616; color: #999;
+    border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 12px;
+    font-family: inherit; }
+  #lightbox .lb-ticks button.on {
+    border-color: #9ecbff; background: #22313f; color: #fff; }
+  /* A year with no composite is not a frame the film can show, so it is not
+     one the ruler offers either -- there would be nothing on the stage. */
+  #lightbox .lb-ticks button.nodata { color: #666; border-style: dashed;
+    cursor: default; }
+  #lightbox .lb-ticks button:disabled { cursor: default; }
   #lightbox .lb-close { position: absolute; top: 16px; right: 20px; }
 
   /* ── overlays ───────────────────────────────────────────────────────── */

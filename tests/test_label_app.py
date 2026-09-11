@@ -3576,6 +3576,18 @@ def test_a_baked_cell_is_drawn_rather_than_recomputed(browser, server):
 INHERITED_BY_DARK = {"--nature", "--cropland", "--artificial", "--brand-ramp",
                      "--glass-blur"}
 
+#: Tokens on `:root` that are not colours at all, and so cannot have a "dark
+#: reading". Kept apart from INHERITED_BY_DARK rather than folded into it: that
+#: set means "the same colour in both themes", and a length is not a colour. A
+#: layout token asked for a dark value would be a nonsense the guard should not
+#: teach.
+NOT_A_COLOUR = {
+    # The panel width -- `clamp(320px, 32vw, 680px)`, a share of the window, so
+    # the first paint is adaptive before app.js overrides it. See
+    # `panelBounds()`; the two are one contract.
+    "--panel-w",
+}
+
 
 def _theme_blocks():
     # app/app.css, since the 1,144-line <style> block moved out of the page.
@@ -3594,11 +3606,12 @@ def test_every_token_has_a_dark_reading():
         f"the dark block invents tokens the light block never defines: "
         f"{sorted(dark - light)} -- light is the default, so these are "
         f"undefined until somebody turns dark on")
-    missing = light - dark - INHERITED_BY_DARK
+    missing = light - dark - INHERITED_BY_DARK - NOT_A_COLOUR
     assert missing == set(), (
         f"{sorted(missing)} are defined only for the light theme. Either give "
-        f"each a dark value or add it to INHERITED_BY_DARK with the reason it "
-        f"is the same colour in both.")
+        f"each a dark value, or add it to INHERITED_BY_DARK with the reason it "
+        f"is the same colour in both -- or to NOT_A_COLOUR if it is not a "
+        f"colour at all.")
 
 
 def test_the_toggle_round_trips_and_survives_a_reload(browser, server):
@@ -3660,5 +3673,557 @@ def test_the_page_runs_under_its_own_content_security_policy(browser, server):
             "the map did not finish loading under the page's own CSP")
         assert not blocked, "CSP blocked something the app needs:\n  " + \
             "\n  ".join(blocked[:6])
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# The chip lightbox as a FILMSTRIP
+#
+# The reading this app asks for is "what changed between 2018 and 2024", and
+# the instrument for that is a loop over nine annual pictures, not two arrow
+# buttons. The old lightbox could not run one: every step blanked the <img>,
+# swapped in the baked sprite at a DIFFERENT size (so the stage, the caption
+# and the buttons all moved), then revealed the img the moment `src` was
+# assigned -- before a byte had decoded -- and did it twice, for the capped
+# chip and then the full composite. Stepping back to a year already looked at
+# re-ran the whole thing.
+#
+# Earth Engine is never connected in these tests, which is the right place to
+# test this from: the baked sprite is then the only picture, and everything
+# below is about the stage, the frames and the film rather than about EE.
+# ---------------------------------------------------------------------------
+def test_the_lightbox_stage_does_not_move_between_years(browser, server):
+    """Half of "they do not switch smoothly" was layout.
+
+    The placeholder was sized `min(92%,64vh)` on a div and the composite
+    `max-width:92%; max-height:64vh` on an img, so each year that arrived
+    resized the picture. One fixed square stage now holds both.
+    """
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ida", batch="/baked.json")
+    try:
+        page.evaluate("openLightbox(2019)")
+        page.wait_for_timeout(300)
+        box = lambda: page.evaluate(
+            """() => { const r = document.getElementById('lb-stage')
+                 .getBoundingClientRect();
+               return [Math.round(r.width), Math.round(r.height),
+                       Math.round(r.top), Math.round(r.left)]; }""")
+        first = box()
+        assert first[0] > 100 and first[0] == first[1], ("not a square stage", first)
+        for _ in range(4):
+            page.keyboard.press("ArrowRight")
+            page.wait_for_timeout(120)
+            assert box() == first, "the stage moved between years"
+    finally:
+        ctx.close()
+
+
+def test_play_runs_the_years_and_stops(browser, server):
+    """The play button, which is the whole point of a filmstrip: a new house
+    appears and stays, a clear-cut appears and greens back, and a wet year that
+    only LOOKS like a change flickers once and goes away. Stepping by hand
+    cannot separate the last two."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ida", batch="/baked.json")
+    try:
+        page.evaluate("openLightbox(2019)")
+        page.wait_for_timeout(300)
+        page.evaluate("lbSetSpeed(200)")
+        year = lambda: page.evaluate("lbYears[lbIdx]")
+        start = year()
+        page.click("#lb-play")
+        assert page.evaluate("lbPlaying()")
+        assert page.get_attribute("#lb-play", "aria-pressed") == "true"
+        page.wait_for_function("lbYears[lbIdx] !== %d" % start, timeout=4000)
+        page.wait_for_timeout(500)
+        # it keeps going, rather than stopping at the end of the years
+        seen = set()
+        for _ in range(14):
+            seen.add(year())
+            page.wait_for_timeout(90)
+        assert len(seen) >= 3, seen
+        page.click("#lb-play")
+        assert not page.evaluate("lbPlaying()")
+        held = year()
+        page.wait_for_timeout(600)
+        assert year() == held, "pause did not stop the film"
+    finally:
+        ctx.close()
+
+
+def test_space_toggles_play_and_a_manual_step_stops_it(browser, server):
+    """Space is play/pause in every film there has ever been, and a manual step
+    is a decision to look at ONE year -- the alternative is the picture moving
+    out from under the button that was just pressed."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ida", batch="/baked.json")
+    try:
+        page.evaluate("openLightbox(2019); lbSetSpeed(300)")
+        page.wait_for_timeout(250)
+        page.keyboard.press(" ")
+        assert page.evaluate("lbPlaying()")
+        page.keyboard.press(" ")
+        assert not page.evaluate("lbPlaying()")
+        page.keyboard.press("p")
+        assert page.evaluate("lbPlaying()")
+        page.keyboard.press("ArrowRight")
+        assert not page.evaluate("lbPlaying()"), "a manual step left it playing"
+        # and closing the lightbox stops it, whatever state it was in
+        page.evaluate("lbPlay()")
+        assert page.evaluate("lbPlaying()")
+        page.keyboard.press("Escape")
+        assert not page.evaluate("lbPlaying()")
+    finally:
+        ctx.close()
+
+
+def test_the_year_ruler_steps_straight_to_a_year(browser, server):
+    """While the film runs, the caption is the only thing that moves and it is
+    text. The ruler says where in the nine years it is, and a click on a tick is
+    how an interpreter goes back to the year that looked wrong."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ida", batch="/baked.json")
+    try:
+        page.evaluate("openLightbox(2019)")
+        page.wait_for_timeout(300)
+        ticks = page.evaluate(
+            "[...document.querySelectorAll('#lb-ticks button')].map(b => b.textContent)")
+        assert ticks == [str(y) for y in page.evaluate("lbYears")], ticks
+        assert page.evaluate(
+            "document.querySelector('#lb-ticks button.on').textContent") == "2019"
+        page.click("#lb-ticks button:last-child")
+        page.wait_for_timeout(200)
+        assert page.evaluate("lbYears[lbIdx]") == page.evaluate("lbYears.at(-1)")
+        assert page.evaluate(
+            "document.querySelector('#lb-ticks button.on').textContent") \
+            == str(page.evaluate("lbYears.at(-1)"))
+    finally:
+        ctx.close()
+
+
+def test_the_speed_slider_keeps_the_arrow_keys_off_the_years(browser, server):
+    """A range input owns left/right once it has the keyboard, and there they
+    mean faster/slower. The lightbox's own ←/→ would have stepped a year at the
+    same time."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="ida", batch="/baked.json")
+    try:
+        page.evaluate("openLightbox(2019); lbSetSpeed(700)")
+        page.wait_for_timeout(250)
+        page.focus("#lb-speed")
+        before = page.evaluate("lbYears[lbIdx]")
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_timeout(150)
+        assert page.evaluate("lbYears[lbIdx]") == before, "the year moved too"
+        assert page.evaluate("lbSpeed") < 700
+        # and it is remembered, because it is a per-reader reading pace
+        assert page.evaluate(
+            "localStorage.getItem('recover-labels:lb-speed')") == str(
+                page.evaluate("lbSpeed"))
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# One imagery source at a time
+#
+# Three controls in three separate cards put imagery on the map -- the basemap
+# picker, the Esri Wayback switch, and the Earth Engine layer buttons -- and
+# they stack in a fixed z-order: basemaps, then Wayback at `ANCHOR_IMAGERY`,
+# then the Earth Engine raster at `ANCHOR_OVERLAY`. They were independent, so
+# turning one on silently buried another. Picking `Sentinel-2 cloudless 2018`
+# while the archive was on changed NOTHING on screen, because Wayback is opaque
+# and sits above every basemap -- the picker that puts the model's own sensor up
+# looked broken. And turning the archive on under a 70%-opaque global class
+# raster gave a wash of Dynamic World colours instead of the sub-metre survey.
+#
+# Neither said anything, which is §AL9's chip fallbacks and §AL10's stale
+# sprites one panel over: the control reports success, the map shows something
+# else, and the interpreter concludes the app is broken.
+# ---------------------------------------------------------------------------
+def _open_card(page, body_id):
+    """Expand one of the control cards.
+
+    `CARDS_OPEN_BY_DEFAULT` holds only the batch and Wayback cards, so the
+    basemap picker and the Earth Engine buttons start folded away -- which is
+    itself part of why the archive covering the basemap went unnoticed.
+    """
+    if page.is_visible(f"#{body_id}"):
+        return
+    page.click(f'[data-toggle="{body_id}"]')
+    page.wait_for_selector(f"#{body_id}", state="visible")
+
+
+#: A two-release Wayback index, served in place of Esri's. The dates are the
+#: campaign's own endpoints, so "did it snap to the endpoints" has an answer
+#: that does not move when Esri publishes a new release.
+FAKE_WAYBACK_CONFIG = {
+    "20180": {"itemTitle": "World Imagery (Wayback 2018-06-27)",
+              "itemURL": "https://example.invalid/tile/20180/"
+                         "{level}/{row}/{col}",
+              "metadataLayerUrl": "https://example.invalid/meta/2018/MapServer"},
+    "20240": {"itemTitle": "World Imagery (Wayback 2024-06-27)",
+              "itemURL": "https://example.invalid/tile/20240/"
+                         "{level}/{row}/{col}",
+              "metadataLayerUrl": "https://example.invalid/meta/2024/MapServer"},
+}
+
+
+def _stub_wayback(ctx):
+    """Serve the archive index ourselves, BEFORE the page loads.
+
+    Seeding `wb.releases` from a test used to look like it worked and was a
+    race: `wb.warm()` fetches the real index at idle, and whichever of the two
+    landed second won. On this machine the network is up, so the real one
+    usually did -- and a test asserting "it snapped to 2018" then read Esri's
+    newest release and passed or failed by timing.
+
+    Routing the request means the app's own `ensureLoaded` builds the release
+    list from this, through the code the deployment uses. The metadata queries
+    that follow go to `example.invalid` and fail, which is correct: a capture
+    date is not what these tests are about, and `_wbFetchMeta` answering null is
+    a state the app must handle anyway.
+    """
+    ctx.route("**/waybackconfig.json",
+              lambda route: route.fulfill(
+                  status=200, content_type="application/json",
+                  body=json.dumps(FAKE_WAYBACK_CONFIG)))
+    # Tiles and metadata for the fake releases: answered, so nothing hangs.
+    ctx.route("https://example.invalid/**",
+              lambda route: route.fulfill(status=200,
+                                          content_type="application/json",
+                                          body="{}"))
+
+
+def _open_with_wayback(browser, base, **kw):
+    """`open_app`, with the archive index stubbed before the first byte."""
+    ctx = _new_context(browser, **kw)
+    stub_config(ctx, FIXTURE_CONFIG)
+    _stub_wayback(ctx)
+    ctx.add_init_script(
+        "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
+    page = ctx.new_page()
+    page.goto(f"{base}/label_app.html?sheetUrl=/mock&batch=/batch.json"
+              f"&campaign=test-campaign&manifest=/absent.json&expert=ida",
+              wait_until="load")
+    page.wait_for_function("typeof S !== 'undefined' && S.points.length > 0",
+                           timeout=30000)
+    page.evaluate("hideLoading()")
+    page.wait_for_function("typeof map !== 'undefined' && map.loaded()",
+                           timeout=30000)
+    return page, ctx
+
+
+def _fake_wayback(page):
+    """Wait for the stubbed index to be in place.
+
+    `_stub_wayback` serves it; this only blocks until `ensureLoaded` has run, so
+    a test can assert on release dates immediately afterwards.
+    """
+    page.evaluate("wb.warm && wb.warm()")
+    page.wait_for_function("wb.loaded && wb.releases.length === 2", timeout=15000)
+
+
+def test_choosing_a_basemap_turns_the_archive_off(browser, server):
+    """The archive is opaque and sits above every basemap, so this control had
+    no visible effect at all while it was on."""
+    base, _ = server
+    page, ctx = _open_with_wayback(browser, base)
+    try:
+        _fake_wayback(page)
+        page.check("#wb-on")
+        page.wait_for_timeout(300)
+        assert page.evaluate("wb.on") is True
+        assert page.evaluate("mapSource") == "wayback"
+
+        _open_card(page, "b-layers")
+        page.select_option("#base-select", "s2c2018")
+        page.wait_for_timeout(300)
+        assert page.evaluate("mapSource") == "base"
+        assert page.evaluate("wb.on") is False
+        assert not page.is_checked("#wb-on")
+        # and the layer the interpreter asked for is the one that is drawn
+        assert page.evaluate(
+            "map.getLayoutProperty('base-s2c2018', 'visibility')") == "visible"
+        assert page.evaluate(
+            "!map.getLayer(WB_LAYER) "
+            "|| map.getLayoutProperty(WB_LAYER, 'visibility')") in (True, "none")
+    finally:
+        ctx.close()
+
+
+def test_the_archive_and_an_earth_engine_layer_are_exclusive(browser, server):
+    """A 70%-opaque global class raster over a 0.5 m aerial survey is not two
+    readings; it is the second one made unreadable.
+
+    Earth Engine is never signed in here, which is the right place to test it
+    from: the exclusivity is a property of the control, not of the tiles.
+    """
+    base, _ = server
+    page, ctx = _open_with_wayback(browser, base)
+    try:
+        _fake_wayback(page)
+        page.evaluate("eeSelectLayer('dw24')")
+        page.wait_for_timeout(200)
+        assert page.evaluate("eeActive.key") == "dw24"
+        assert page.evaluate("mapSource") == "ee"
+
+        # turning the archive on drops the layer
+        page.check("#wb-on")
+        page.wait_for_timeout(300)
+        assert page.evaluate("mapSource") == "wayback"
+        assert page.evaluate("eeActive.key") is None
+        assert page.evaluate(
+            "document.querySelectorAll('[data-ee].on').length") == 0
+
+        # and picking a layer turns the archive back off
+        page.evaluate("eeSelectLayer('dw18')")
+        page.wait_for_timeout(300)
+        assert page.evaluate("mapSource") == "ee"
+        assert page.evaluate("wb.on") is False
+        assert not page.is_checked("#wb-on")
+    finally:
+        ctx.close()
+
+
+def test_turning_the_archive_off_hands_the_map_back(browser, server):
+    base, _ = server
+    page, ctx = _open_with_wayback(browser, base)
+    try:
+        _fake_wayback(page)
+        page.check("#wb-on")
+        page.wait_for_timeout(300)
+        assert page.evaluate("mapSource") == "wayback"
+        page.uncheck("#wb-on")
+        page.wait_for_timeout(300)
+        assert page.evaluate("mapSource") == "base"
+        # clearing the last Earth Engine layer does the same
+        page.evaluate("eeSelectLayer('dw24'); eeSelectLayer('dw24')")
+        page.wait_for_timeout(200)
+        assert page.evaluate("eeActive.key") is None
+        assert page.evaluate("mapSource") == "base"
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# The panel width is a share of the window, not a number of pixels
+#
+# It was a flat 430 px default, a flat [320, 680] drag clamp, and a stored width
+# restored verbatim -- three separate ways to be wrong about the screen it is
+# opened on. 430 px is a third of a 1280 laptop lid and an eighth of a 4K
+# desktop. A width dragged to 680 on a large monitor comes back on a 1366 px
+# laptop taking half the window, leaving the map -- the instrument -- as the
+# smaller half, and squeezing the chip lightbox with it, which is positioned off
+# `--panel-w`. And nothing re-ran on `resize`, so the same thing happened when a
+# window was made smaller or a laptop undocked.
+# ---------------------------------------------------------------------------
+def _panel_px(page):
+    return float(page.evaluate(
+        "getComputedStyle(document.documentElement)"
+        ".getPropertyValue('--panel-w')").strip().rstrip("px"))
+
+
+@pytest.mark.parametrize("w,h", [(1280, 800), (1600, 900), (1920, 1080),
+                                 (2560, 1400)])
+def test_the_panel_takes_a_share_of_the_window(browser, server, w, h):
+    """Never more than 46% of the window: the map is the instrument and the
+    panel is the form beside it."""
+    base, _ = server
+    ctx = _new_context(browser, viewport={"width": w, "height": h})
+    stub_config(ctx, FIXTURE_CONFIG)
+    ctx.add_init_script(
+        "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
+    page = ctx.new_page()
+    page.goto(f"{base}/label_app.html?sheetUrl=/mock&batch=/batch.json"
+              f"&campaign=test-campaign&manifest=/absent.json&expert=ida",
+              wait_until="load")
+    page.wait_for_function("typeof S !== 'undefined' && S.points.length > 0",
+                           timeout=30000)
+    page.wait_for_timeout(500)
+    try:
+        px = _panel_px(page)
+        assert 300 <= px <= 680, px
+        assert px / w <= 0.46 + 1e-6, (px, w, px / w)
+        # and it actually scales, rather than being the same number everywhere
+        assert px == pytest.approx(min(680, max(320, round(w * 0.32))), abs=2)
+    finally:
+        ctx.close()
+
+
+def test_a_width_from_a_bigger_screen_is_clamped_not_obeyed(browser, server):
+    """The stored preference is kept, so undocking and re-docking comes back to
+    the width that was chosen -- but it is never applied unclamped."""
+    base, _ = server
+    ctx = _new_context(browser, viewport={"width": 1100, "height": 800})
+    stub_config(ctx, FIXTURE_CONFIG)
+    ctx.add_init_script(
+        "try { localStorage.setItem('recover-labels:seen-intro','1');"
+        "      localStorage.setItem('recover-labels:panel-w','680'); } catch (e) {}")
+    page = ctx.new_page()
+    page.goto(f"{base}/label_app.html?sheetUrl=/mock&batch=/batch.json"
+              f"&campaign=test-campaign&manifest=/absent.json&expert=ida",
+              wait_until="load")
+    page.wait_for_function("typeof S !== 'undefined' && S.points.length > 0",
+                           timeout=30000)
+    page.wait_for_timeout(400)
+    try:
+        px = _panel_px(page)
+        assert px <= 1100 * 0.46 + 1, px
+        assert px < 680, "a 680 px width from a bigger screen was obeyed"
+        # the preference itself is untouched, so the big screen keeps its width
+        assert page.evaluate(
+            "localStorage.getItem('recover-labels:panel-w')") == "680"
+        # and making the window bigger gives it back
+        page.set_viewport_size({"width": 1800, "height": 900})
+        page.wait_for_timeout(400)
+        assert _panel_px(page) == 680
+        # while making it smaller re-clamps rather than leaving the map a sliver
+        page.set_viewport_size({"width": 900, "height": 800})
+        page.wait_for_timeout(400)
+        assert _panel_px(page) <= 900 * 0.46 + 1, _panel_px(page)
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# Turning the archive on lands on the two dates the label is about
+# ---------------------------------------------------------------------------
+def test_the_archive_opens_split_at_the_two_endpoints(browser, server):
+    """The label is a 2018 -> 2024 transition and the only way to call one is to
+    see both dates at the same place.
+
+    Turning the archive on used to give ONE release -- whichever `wb.idx` held,
+    which on a fresh session is the newest, serving 2025/2026 imagery against a
+    2018 question -- and the interpreter then had to know to press `Set nearest
+    imagery to 2018 ⇆ 2024`.
+    """
+    base, _ = server
+    page, ctx = _open_with_wayback(browser, base)
+    try:
+        _fake_wayback(page)
+        # the newest release is what `wb.idx` starts on, and it is the wrong one
+        assert page.evaluate("wb.releases[wb.idx].date") == "2024-06-27"
+        page.check("#wb-on")
+        page.wait_for_timeout(800)
+        got = page.evaluate("({cmp: wbCmp.on, checked: "
+                            "document.getElementById('wb-compare').checked, "
+                            "a: wb.releases[wb.idx].date, "
+                            "b: wb.releases[wbCmp.idxB].date})")
+        assert got["cmp"] is True and got["checked"] is True, got
+        assert got["a"] == "2018-06-27", got      # left = the 2018 endpoint
+        assert got["b"] == "2024-06-27", got      # right = the 2024 endpoint
+    finally:
+        ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# The swipe's own date labels, which were behind the furniture
+#
+# `.wb-swipe-label` is appended to `#map`, and `#map` is FULL WIDTH -- the panel
+# is a layer over it, not a second pane. So `right: 10px` put the right-hand
+# date underneath the panel, and `bottom: 34px` put the left-hand one underneath
+# the chip filmstrip. Measured at 1440x900 before the fix: label B spanned
+# x 1233-1430 against a panel starting at x 967, and `elementFromPoint` at the
+# centre of each returned panel content and a chip cell.
+#
+# The right side's date read as simply missing -- which is what it was, and is
+# how it was reported. Geometry, not z-index: the labels belong in the visible
+# map, not on top of the panel.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("w,h", [(1440, 900), (1280, 800), (1920, 1080)])
+def test_both_swipe_dates_are_actually_visible(browser, server, w, h):
+    base, _ = server
+    page, ctx = _open_with_wayback(browser, base,
+                                   viewport={"width": w, "height": h})
+    try:
+        _fake_wayback(page)
+        page.check("#wb-on")
+        page.wait_for_timeout(900)
+        seen = page.evaluate("""() => {
+          const out = {};
+          for (const side of ['a', 'b']) {
+            const el = document.querySelector('.wb-swipe-label.' + side);
+            if (!el) { out[side] = 'missing'; continue; }
+            const r = el.getBoundingClientRect();
+            // What is actually painted where this label is. `pointer-events:
+            // none` is on these, so `elementFromPoint` would otherwise fall
+            // straight through to the map canvas and this test could never
+            // fail -- it has to be lifted for the hit test and put back.
+            const was = el.style.pointerEvents;
+            el.style.pointerEvents = 'auto';
+            const top = document.elementFromPoint(r.left + r.width / 2,
+                                                  r.top + r.height / 2);
+            el.style.pointerEvents = was;
+            out[side] = {
+              text: el.textContent.trim(),
+              w: Math.round(r.width), h: Math.round(r.height),
+              onScreen: r.left >= 0 && r.top >= 0
+                        && r.right <= window.innerWidth
+                        && r.bottom <= window.innerHeight,
+              // the label itself, or a descendant of it, must be the hit
+              clear: !!top && (top === el || el.contains(top)),
+              over: top ? (top.id || top.className || top.tagName) : null,
+            };
+          }
+          return out; }""")
+        for side in ("a", "b"):
+            s = seen[side]
+            assert s != "missing", side
+            assert s["w"] > 40 and s["h"] > 10, (side, s)
+            assert s["onScreen"], (side, s)
+            assert s["clear"], (
+                f"the {side} swipe date is behind {s['over']!r} -- "
+                f"it is drawn but nobody can read it: {s}")
+        # Nothing the app draws over the map may sit on top of the pair. The
+        # Map controls card is what the OBVIOUS repair collided with: it spans
+        # x 651-951 over almost the map's full height, so while it is open
+        # there is no free space in the right half to put a right-hand label.
+        boxes = page.evaluate(
+            "() => {"
+            "  const r = e => { const b = e.getBoundingClientRect();"
+            "    return [b.left, b.top, b.right, b.bottom]; };"
+            "  const hit = (a, b) => a[0] < b[2] && b[0] < a[2]"
+            "                     && a[1] < b[3] && b[1] < a[3];"
+            "  const row = r(document.getElementById('wb-swipe-labels'));"
+            "  const out = {};"
+            "  for (const id of ['ctrl-right', 'panel', 'ev-film']) {"
+            "    const el = document.getElementById(id);"
+            "    out[id] = el ? hit(row, r(el)) : false;"
+            "  }"
+            "  return out; }")
+        assert not any(boxes.values()), f"the date row collides with {boxes}"
+        # and they say which side is which, and are not the same date
+        assert "◀" in seen["a"]["text"], seen["a"]
+        assert "▶" in seen["b"]["text"], seen["b"]
+        assert seen["a"]["text"] != seen["b"]["text"]
+    finally:
+        ctx.close()
+
+
+def test_the_archive_filters_to_releases_with_imagery_here(browser, server):
+    """Most of the ~196 Wayback releases re-serve older tiles, so an unfiltered
+    list offers ~180 dates that are the same picture -- and the endpoint snap
+    can land on one of them. The filter is on by default, and the snap is run
+    AGAIN inside what it leaves: snapping only once picks from all 196."""
+    base, _ = server
+    page, ctx = _open_with_wayback(browser, base)
+    try:
+        assert page.is_checked("#wb-local"), (
+            "the local-release filter is not on by default")
+        # the order is the point: `applyLocalFilter` decides what `wb.view`
+        # holds and `wbNearestRelease` picks out of `wb.view`
+        src = APP_JS.read_text()
+        assert "async function wbSnapToTargets" in src
+        on = src[src.index("if (onBox.checked)"):]
+        on = on[:on.index("} else {")]
+        assert "await wbSnapToTargets()" in on
+        assert on.index("await applyLocalFilter()") > on.index("await wbSnapToTargets()"), (
+            "the filter must run after the first snap -- filtering first makes "
+            "the archive appear to hang on nothing")
+        assert on.count("wbSnapToTargets()") == 2, (
+            "the snap must run again inside the filtered view")
     finally:
         ctx.close()

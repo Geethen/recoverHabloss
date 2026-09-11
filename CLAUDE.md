@@ -395,6 +395,73 @@ supervision, guided filtering, dot/normalised-difference features).
   because `--dry-run` returns before the stamp is carried and cannot see it.
   **Still open**: index filmstrips are offered in the scheme picker but not
   baked, so NDVI/NDMI/NBR drop all nine years to live EE.
+  **§AL13 is the filmstrip and the capture date (2026-09-11), both from the
+  user using the app.** The lightbox is now a **frame stack on a fixed square
+  stage** — one decoded `<img>` per year, kept, over the baked sprite — with a
+  **play button** (Space/`P`, 0.2–2.0 s, a year ruler). Every step used to
+  blank the img, swap in the sprite *at a different size*, and then reveal the
+  new img on `src =` rather than on decode: four repaints and two reflows per
+  arrow press, and re-run in full when stepping back. None of it was Earth
+  Engine. Play is a `setTimeout` **chain**, not an interval (an interval runs
+  ahead of its pictures), prefetches two at a time in play order, and skips
+  years with no composite — EE renders those black, which reads as broken.
+  The nine prefetched frames are the **12-scene capped** composite and only the
+  year being read is upgraded to uncapped — nine uncapped ones cost minutes of
+  EE per open for AL9's median 0.002 reflectance difference, so the old
+  "an enlarged year is waiting on purpose" rule holds for one year and not nine. And
+  **"no capture date" was Esri's 15 m global base being reported as one**:
+  `hits.find(Boolean)` took the first metadata sublayer that answered, and the
+  base layer answers *everywhere* with a null date, so it beat the dated scene
+  in a band that was never probed (nothing finer than the working zoom ever
+  was, and band 12 was skipped). Now: two waves, dated rows only, band nearest
+  the working zoom, and `{date: null, base: true}` recorded as *"no dated
+  survey"* — which is an answer, not a failure. Measured 5 of 120 reads on
+  round one's draw, all genuine Arctic base-map points.
+  `tests/test_wayback_meta.py` runs the app's own JS in node against rows
+  recorded from the live service.
+  **§AL13.4: the basemap picker, the Wayback switch and the Earth Engine layer
+  buttons are now MUTUALLY EXCLUSIVE** (`useMapSource`, re-entrancy guarded;
+  Wayback is switched through `wb.setOn`, which goes through the checkbox's own
+  handler rather than duplicating its teardown). Fixing the z-order earlier made
+  it *predictable* which layer covered which and did not stop one covering
+  another: choosing `Sentinel-2 cloudless 2018` with the archive on changed
+  nothing on screen, because Wayback is opaque and above every basemap. All
+  three cards now carry the same **"on the map:"** read-out naming the Wayback
+  *release*, because the fault is working in one card and not being told another
+  owns the map. The one case that cannot be literally satisfied and is stated
+  instead: there is no "no basemap" state, so an EE layer is still drawn over
+  the basemap (it is a semi-transparent, often masked prior) — picking one turns
+  the *archive* off.
+  **§AL13.5: the panel width is a share of the window** (`panelBounds()`, 32%
+  preferred, floored 320, capped at 46% and 680; `--panel-w` is also declared in
+  CSS as `clamp(320px, 32vw, 680px)` so the FIRST PAINT is already adaptive —
+  the two are one contract). A stored width is **clamped, not overwritten**, so
+  undocking does not lose the width chosen for the dock. And **turning the
+  archive on now opens the swipe split at the two endpoints for that location**
+  (`wbSnapToTargets`, both stages, so `wbSnapRefine` moves each side to the
+  release whose *capture* date at that point is nearest its target); it used to
+  give one release — the NEWEST, serving 2025/2026 against a 2018 question.
+  **Test-method note**: the first version of those tests seeded `wb.releases`
+  from the test and was a race against `wb.warm()`'s real fetch, which usually
+  won. Route the request and let `ensureLoaded` build the list. Seeding state
+  the code under test also fetches is a coin toss, not a stub.
+  **§AL13.6 fixes what using that found.** The swipe's two date labels were
+  **behind the furniture**: `.wb-swipe-label` is a child of `#map`, which is
+  FULL WIDTH (the panel is a layer over it), so `right: 10px` put the right-hand
+  date under the panel and `bottom: 34px` put the left one under the filmstrip —
+  reported as "the right side does not show up", which is what it was. The
+  obvious repair also fails: `#ctrl-right` spans x 651-951 over almost the map's
+  full height, so there is **no free space in the right half** while the Map
+  controls card is open. Both dates are now one row at **top-left** with ◀/▶
+  carrying the side, z-index 3 (under the panel — outranking it turns "hidden"
+  into "a pill over the form"). Also: **`wb-local` is checked by default** (196
+  releases → 14 with distinct local imagery at b001/p0000), and it runs in two
+  passes with the snap — snap by release date (instant), walk the tilemap, snap
+  again inside what survives, because the filter decides what `wb.view` holds
+  and `wbNearestRelease` picks out of `wb.view`. The dates MOVE a few seconds
+  after switch-on and that is correct. **AL13.4's "on the map:" read-out is
+  removed** by the user's call — the diagnosis was right, the remedy was one
+  thing too many; the exclusivity stays.
 - The two stable-class map errors — mountains read as `Artificial -> Artificial`,
   wetlands as `Cropland -> Cropland` — are diagnosed in `ACTIVE_LEARNING.md`
   §AL-T. **The mountain one is a bare-ground error, not a slope error**: the

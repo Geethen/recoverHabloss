@@ -596,12 +596,31 @@ The point strip uses a **roving** <kbd>Tab</kbd> stop — one for the strip, not
 1,250 — and <kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd> walk it
 once you are in it.
 
-**Wayback is the instrument.** Turn it on, press **snap to 2018 ⇆ 2024**, and the
-swipe is the release nearest 2018 on the left and the release nearest **2024** on
-the right — not the newest, which now serves 2025/2026 imagery. The snap runs in
-two stages: release dates immediately, so the button stays instant, then the
-per-point *capture* dates once they arrive, moving each side to the release whose
-imagery is actually nearest its target. Each swipe label shows the gap
+**Wayback is the instrument, and turning it on is all you have to do.** It opens
+**split at the two endpoints for that location** — the release nearest 2018 on
+the left, the release nearest **2024** on the right. That is not what it used to
+do: it gave one release, whichever `wb.idx` happened to hold, which on a fresh
+session is the *newest* and serves 2025/2026 imagery against a 2018 → 2024
+question, and the interpreter had to know to press a button to get to the
+comparison the archive exists for. **snap to 2018 ⇆ 2024** is still there, and is
+how you come back to it after stepping the releases around.
+
+The snap runs in two stages: release dates immediately, so it is instant, then
+the per-point *capture* dates once they arrive, moving each side to the release
+whose imagery is actually nearest its target **at this point**.
+
+*only releases with new imagery at this sample* is **on by default**. Most of the
+~196 releases re-serve older tiles, so the unfiltered list offers ~180 dates that
+are the same picture — and the endpoint snap can land on one of them, which is
+how a side ends up captioned 2018-06-27 while showing 2017 imagery. Measured at
+one point: 196 releases → **14** with distinct local imagery.
+
+That filter and the snap run in two passes, and the order is the point: the
+filter decides what `wb.view` holds and `wbNearestRelease` picks out of
+`wb.view`. Snap once by release date (instant), walk the tilemap (a few
+seconds), snap again inside what survives. Filtering first is correct and makes
+the archive appear to hang on nothing. **Expect the dates to move a few seconds
+after switch-on** — that is the honest answer replacing a flattering one. Each swipe label shows the gap
 (`◀ 2018-05-11 (−0.2 yr from 2018)`), and past ~1.5 years the panel offers the
 `imagery date gap` flag rather than leaving you to notice. Then hold
 <kbd>Space</kbd>: blink comparison finds a new building or a cleared field far
@@ -614,6 +633,29 @@ release date. **It always describes the point**, never wherever you last clicked
 clicking the map gives a separate, labelled read-out, because an interpreter
 comparing a neighbouring field used to record that field's dates as the
 provenance of their call.
+
+The date comes from the release's own metadata service, and there are **three
+possible answers, kept apart**:
+
+* a **dated survey** — `2023-06-10 · Maxar · 0.31 m`, and *(month only)* or
+  *(year only)* where that is all the service records, which is still perfectly
+  good provenance for a 2018-vs-2024 call;
+* **no dated survey at all** — *"no dated survey — Esri's global base imagery
+  (15 m)"*. Esri's 15 m TerraColor base covers the whole planet and carries no
+  date, so at a point with no high-resolution survey it is the only thing there.
+  That is an answer about the point, and the record says so;
+* and a **failed lookup**, which says that.
+
+Those used to be one string, `unknown date`, which is how "some Wayback images
+do not return capture dates" came to be reported. The lookup took the first
+metadata sublayer that returned *anything* — and the base layer returns
+something everywhere — so the base map's empty date won over the dated scene
+sitting in a sublayer that was never asked for. It now probes the band matched
+to the working zoom and its neighbours first, spends a second wave on the finer
+bands only when none of those carries a date, and prefers the band nearest the
+zoom the tile is actually drawn from. Measured on round one's own draw: 5 of 120
+reads have no date, and every one of them is a genuine Arctic base-map point.
+See `docs/research/ACTIVE_LEARNING.md` §AL13.3.
 
 Nothing is lost if the network drops. Every label is written to `localStorage`
 before it is sent, and rows stay in an **outbox** until the Sheet acknowledges
@@ -698,6 +740,28 @@ meaning one thing everywhere: *selected*.
   Anything anchored to the map's right edge clears the whole panel now
   (`calc(var(--panel-w) + 12px)`), and the lightbox backdrop stops at
   `var(--panel-w)`.
+
+- **The panel width is a share of the window, not a number of pixels.** It was
+  a flat 430 px default with a flat `[320, 680]` drag clamp and a stored width
+  restored verbatim — three ways of being wrong about the screen it is opened
+  on. 430 px is a third of a 1280 laptop lid and an eighth of a 4K desktop; a
+  width dragged to 680 on a large monitor came back on a 1366 px laptop taking
+  half the window, leaving the map as the smaller half; and nothing re-ran on
+  `resize`, so undocking a laptop did the same thing.
+
+  `panelBounds()` now derives it from the viewport — **32% preferred**, floored
+  at 320 px (what the two three-button class rows need), capped at 46% of the
+  window and never above 680 px, because a form does not get better past that
+  and the map is the instrument. 410 px at 1280, 614 px at 1920, 680 px at 2560.
+
+  Two details are the actual fix rather than the arithmetic. A stored width is
+  **clamped, not overwritten**, so a small window re-clamps and a large one gives
+  it back — undocking must not lose the width chosen for the dock. And
+  `--panel-w` is declared in CSS as `clamp(320px, 32vw, 680px)` rather than
+  defaulted per-rule to `430px`, so the **first paint** is already a share of the
+  window and the panel does not land at a fixed width and then jump. Those two
+  definitions are one contract; keep them in step. Double-click the grip to reset
+  to the preferred width.
 
 - **Glass alpha is set by the darkest scene, not the prettiest one.** Their
   panel is `.92`. A 60%-opaque one looks better over farmland and then fails
@@ -1221,9 +1285,46 @@ batch** — and a 404 or a malformed file falls straight back to the live path.
 
 A chip that hangs becomes an explicit **↻ retry** rather than spinning forever,
 because a hung chip and a failed one otherwise look identical and an
-interpreter will wait. Double-click or **⤢** opens the lightbox, which shows
-the capped chip immediately and then replaces it with the **uncapped** composite
-at 512 px, and owns <kbd>←</kbd>/<kbd>→</kbd> while it is up.
+interpreter will wait. Double-click or **⤢** opens the lightbox.
+
+### The lightbox is a filmstrip
+
+It holds **one decoded image per year** on a fixed square stage, with the baked
+sprite underneath, and shows a year by switching which frame is on top. So
+stepping is instant, stepping *back* is free, and the stage never resizes. Then
+it can be played:
+
+| | |
+| --- | --- |
+| <kbd>←</kbd> <kbd>→</kbd> | step a year (and stop the film) |
+| <kbd>Space</kbd> <kbd>P</kbd> | play / pause |
+| the slider | 0.2–2.0 s per year, remembered per reader |
+| the year ruler | where the film is; click a year to go there |
+| <kbd>Esc</kbd> | close |
+
+**Why a film and not two buttons.** Nine annual frames at ~0.7 s separate the
+three things this campaign is trying to tell apart, and stepping by hand cannot:
+real change appears at one year and **stays**; a disturbance that recovered
+appears and then greens back; an atmospheric or wet-year artefact flickers once
+and goes away. The eye has to hold two pictures a second apart to see the
+difference between the last two.
+
+It runs off the **baked sprite** with Earth Engine never connected, which is the
+normal case for a labeller — and it is perfectly smooth there, because a static
+file has no scheduler. Where Earth Engine *is* connected, 512 px composites are
+prefetched in play order from where the interpreter is, two at a time (nine at
+once all pile up at the concurrency throttle and the year being looked at
+arrives last), and each one replaces its sprite frame only once it has
+**decoded**. Those nine are the **12-scene capped** composite — nine uncapped
+ones would cost minutes of Earth Engine per open, for a median 0.002 relative
+reflectance difference at the plot — and the year actually being **read** is
+then upgraded to the uncapped composite, replacing its own frame in place. Not
+while the film is running, though: a year it passes through is not a year being
+read, and upgrading each in turn would request all nine uncapped composites over
+one play-through. Pausing on a year asks for that year. The caption says which
+of the two you are looking at. Years with no cloud-free composite are skipped by both the film and
+the arrow keys: Earth Engine renders those black, which reads as a broken image
+rather than as an absence.
 
 **The lightbox covers the map, not the panel.** Stepping years in it has always
 driven the spectral profile and the index chart — `renderLightbox` calls
@@ -1283,6 +1384,50 @@ tile at every new location. Five specifics worth knowing:
   imagery being labelled from. The archive now has a slot of its own
   (`imagery-slot`, declared in the style), so the order is a property of the
   style rather than of what was clicked when.
+
+### One imagery source at a time
+
+Fixing the z-order made it *predictable* which layer covered which; it did not
+stop one covering another. Three controls in three cards put imagery on the map
+— the basemap picker, the Wayback switch and the Earth Engine buttons — and they
+were independent, so:
+
+* choosing **Sentinel-2 cloudless 2018** while the archive was on changed
+  nothing on screen, because Wayback is opaque and above every basemap. The
+  picker whose purpose is to show the model's own sensor at the model's own
+  pixel looked broken;
+* turning the archive on under a 70%-opaque class raster gave a wash of Dynamic
+  World colours instead of the sub-metre survey.
+
+They are now **mutually exclusive**: whichever you switch on turns the other two
+off, and the control that was turned off shows it — its checkbox clears, its
+layer button loses the highlight.
+
+The one thing that cannot be literally satisfied: there is no "no basemap"
+state, so an Earth Engine layer is still drawn **over** the basemap — it is a
+semi-transparent, often masked prior (`dwbuilt` and `obtemporal` are transparent
+wherever nothing changed) and on a blank background it would be unreadable.
+Picking one turns the **archive** off, so what is underneath is the 10 m basemap
+it can be compared against rather than a 0.5 m survey at a scale it does not
+answer at.
+
+### Where the swipe's two dates go
+
+Not where you would first put them. `.wb-swipe-label` is a child of `#map`, and
+`#map` is **full width** — the panel is a layer over it, not a second pane — so
+`right: 10px` anchored the right-hand date to the right edge of a map running
+*behind* the panel, and `bottom: 34px` put the left-hand one in the chip
+filmstrip. At 1440x900 label B spanned x 1233-1430 against a panel starting at
+x 967. Only the card's left-hand `<select>` was visible, so the fault reads as
+*the right side* being missing.
+
+The obvious repair is wrong too: the top edge with each label in its own half
+fails, because `#ctrl-right` spans x 651-951 over almost the map's full height
+and there is **no free space in the right half** while the Map controls card is
+open. So the two dates are one row at **top-left**, the region that is always
+clear, with `◀` / `▶` carrying which half each describes. z-index stays at 3 —
+the map layer, under the panel — because outranking the panel would only turn
+"hidden" into a date pill floating over the form.
 
 ### The pixel inspector
 

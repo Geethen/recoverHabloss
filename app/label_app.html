@@ -169,8 +169,12 @@
             <select id="wb-select" aria-label="Capture date (left)" disabled><option>loading…</option></select>
             <button id="wb-next" title="Newer capture" disabled>›</button>
           </div>
-          <label title="Filter the list to releases containing new imagery at this sample; many releases reuse older imagery.">
-            <input type="checkbox" id="wb-local" disabled> only releases with new imagery at this sample</label>
+          <!-- CHECKED by default. Most of the 196 releases re-serve older
+               tiles, so an unfiltered list offers the interpreter ~180 dates
+               that are the same picture -- and the endpoint snap can land on
+               one of them. -->
+          <label title="Filter the list to releases containing new imagery at this sample; most releases reuse older imagery.">
+            <input type="checkbox" id="wb-local" checked disabled> only releases with new imagery at this sample</label>
           <label title="The map left of the divider uses the first date; the map right of it uses the second date.">
             <input type="checkbox" id="wb-compare" disabled> ⇆ compare two dates with a swipe divider</label>
           <div class="row" id="wb-row-b" style="display:none">
@@ -493,12 +497,31 @@
 <div id="lightbox" role="dialog" aria-modal="true" aria-labelledby="lb-cap">
   <button class="lb-close" id="lb-close" aria-label="Close (Esc)" title="Esc">✕</button>
   <div class="lb-cap" id="lb-cap"></div>
-  <div id="lb-slice" style="display:none"></div>
-  <img id="lb-img" alt="Sentinel-2 chip">
+  <!-- One fixed square stage, and everything draws inside it. The placeholder
+       used to be a `min(92%,64vh)` div and the composite a `max-width:92%` img,
+       so every year that arrived resized the picture -- half of what read as
+       "the chips do not switch smoothly" was the stage moving under them.
+       `lb-slice` is the baked sprite, correct for the year the instant it is
+       asked for; `lb-layers` holds one decoded <img> per year on top of it, so
+       a year already looked at is a style change and no network at all. -->
+  <div id="lb-stage">
+    <div id="lb-slice"></div>
+    <div id="lb-layers"></div>
+  </div>
   <div class="lb-nav">
     <button id="lb-prev" title="Older year (←)">‹ older</button>
+    <button id="lb-play" aria-pressed="false"
+            title="Play the years as a film (Space or P)">▶ play</button>
     <button id="lb-next" title="Newer year (→)">newer ›</button>
+    <label class="lb-speed" title="How long each year is held on screen">
+      <input type="range" id="lb-speed" min="200" max="2000" step="100"
+             value="700" aria-label="Seconds per year">
+      <span id="lb-speed-val">0.7 s</span>
+    </label>
   </div>
+  <!-- Where the film is, which the caption alone cannot say while it is
+       running, and a way to step straight to a year. -->
+  <div class="lb-ticks" id="lb-ticks"></div>
 </div>
 
 <!-- The app, which used to be 7,923 inline lines below this point.

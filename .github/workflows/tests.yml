@@ -23,6 +23,7 @@ on:
       - 'tests/test_chip_ramp.py'
       - 'tests/test_label_batches.py'
       - 'tests/test_label_overlap.py'
+      - 'tests/test_wayback_meta.py'
       - 'src/reassign_batches.py'
       - '.github/workflows/tests.yml'
       # The job calls this now, so a change to it has to be able to break
@@ -46,6 +47,7 @@ on:
       - 'tests/test_chip_ramp.py'
       - 'tests/test_label_batches.py'
       - 'tests/test_label_overlap.py'
+      - 'tests/test_wayback_meta.py'
       - 'src/reassign_batches.py'
       - '.github/workflows/tests.yml'
       # The job calls this now, so a change to it has to be able to break
@@ -152,10 +154,19 @@ jobs:
           # the two disagreeing means the interpreter judges one footprint
           # while the builders reduce over another. It was written and then
           # not listed here, which is the state the header calls a comment.
+          # test_wayback_meta.py is the same shape of guard one instrument
+          # over: it runs the app's own capture-date selection in node against
+          # rows recorded from the live Esri service. The date it picks is
+          # written into every label record as `imagery_a`/`imagery_b`, and the
+          # failure it was written for -- the 15 m global base reported as a
+          # capture date -- is invisible from the outside, because the app
+          # still shows A date. Listed HERE and not only written, which is the
+          # note directly above.
           uv run --no-sync pytest \
                  tests/test_label_app.py tests/test_chip_ramp.py \
                  tests/test_label_cell.py tests/test_label_rounds.py \
                  tests/test_label_batches.py tests/test_label_overlap.py \
+                 tests/test_wayback_meta.py \
                  -q --tb=short | tee result.txt
           # ZERO skips is the invariant, and the old check was weaker than it
           # looks: `^[0-9]+ skipped` only matches a summary that BEGINS with the
