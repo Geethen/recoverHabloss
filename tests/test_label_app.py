@@ -82,6 +82,9 @@ class Sheet:
     def __init__(self):
         self.rows: dict[tuple, dict] = {}
         self.fail = False
+        #: How many `?action=mine` reads answer the way /exec intermittently
+        #: does -- an HTML 404 -- before the real answer.
+        self.fail_mine = 0
         #: What `?action=ee_token` answers. None is the honest default: most
         #: deployments have no service account, and that case must leave the
         #: app exactly where it was rather than showing a fault.
@@ -147,6 +150,8 @@ def server():
                 return self._json(BATCH)
             if parts.path == "/cal.json":
                 return self._json(CAL_BATCH)
+            if parts.path == "/calq.json":
+                return self._json(CALQ_BATCH)
             if parts.path == "/assigned.json":
                 return self._json(ASSIGNED_BATCH)
             if parts.path == "/evidence.json":
@@ -186,6 +191,14 @@ def server():
                     {"point_id": r["point_id"], "expert_id": r["expert_id"]}
                     for r in sheet.rows.values()
                     if r["batch_id"] == query.get("batch")]})
+            if action == "mine" and sheet.fail_mine > 0:
+                sheet.fail_mine -= 1
+                body = b"<html><body>Sorry, unable to open the file.</body></html>"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
             if action == "mine":
                 return self._json({"ok": True, "rows": [
                     r for r in sheet.rows.values()
@@ -281,6 +294,10 @@ CAL_BATCH = {
                for i in range(4)],
 }
 
+
+#: The qualification stage: same points, answers withheld until the set is done.
+CALQ_BATCH = {**CAL_BATCH, "batch_id": "calq001", "feedback": "end",
+              "stage": "qualify"}
 
 EMPTY_CONFIG = "window.LABEL_APP_CONFIG = {};"
 
@@ -507,6 +524,48 @@ def test_my_own_rows_come_back_on_a_second_machine(browser, server):
         # restored rows are already in the sheet and must not be re-queued
         assert page.evaluate("Outbox.size()") == 0
     finally:
+        ctx.close()
+
+
+def test_the_restore_survives_the_intermittent_404(browser, server):
+    """A labeller's 25 calibration rows were safe in the sheet and the app came
+    up empty with Export saying "nothing labelled" (2026-09-28): /exec answers
+    an HTML 404 about one request in four, and a failed `mine` was dropped."""
+    base, sheet = server
+    for i in range(2):
+        sheet.seed(campaign="test-campaign", batch_id="t001",
+                   point_id=f"t{i:03d}", class_2018="Nature",
+                   class_2024="Nature", transition="Nature -> Nature",
+                   is_change=0, confidence=2, labeller="dee", expert_id="dee",
+                   labelled_at="2026-09-25T09:00:00Z")
+    sheet.fail_mine = 2
+    page, ctx = open_app(browser, base, who="dee")
+    try:
+        page.wait_for_function("Object.keys(S.labels).length >= 2", timeout=20000)
+        assert page.evaluate("LabelPull.state") == "ok"
+    finally:
+        sheet.fail_mine = 0
+        ctx.close()
+
+
+def test_a_failed_restore_is_not_reported_as_nothing_labelled(browser, server):
+    base, sheet = server
+    sheet.seed(campaign="test-campaign", batch_id="t001", point_id="t000",
+               transition="Nature -> Nature", labeller="fay", expert_id="fay",
+               labelled_at="2026-09-25T09:00:00Z")
+    sheet.fail_mine = 99
+    page, ctx = open_app(browser, base, who="fay")
+    try:
+        page.wait_for_function("LabelPull.state === 'failed'", timeout=30000)
+        assert page.text_content("#pill-sync").strip() == "Saved labels not loaded"
+        msgs = []
+        page.on("dialog", lambda d: (msgs.append(d.message), d.dismiss()))
+        page.evaluate("exportBatch()")
+        page.wait_for_timeout(200)
+        assert msgs and "could not be fetched" in msgs[0]
+        assert "Nothing labelled" not in msgs[0]
+    finally:
+        sheet.fail_mine = 0
         ctx.close()
 
 
@@ -827,6 +886,86 @@ def test_calibration_tells_you_after_each_call_and_scores_at_the_end(browser, se
         ctx.close()
 
 
+def _call(page, keys):
+    for k in keys:
+        page.keyboard.press(k)
+    page.keyboard.press("2")   # confidence: required to save
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(400)
+
+
+def test_going_back_shows_that_samples_own_reference(browser, server):
+    """A labeller's report (2026-09-25): stepping back to a called sample showed
+    the MOST RECENT sample's reference, because the line held only the last
+    save. Each called sample must show its own, and the whole set must be
+    reviewable with a way back to every sample."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/cal.json")
+    try:
+        _call(page, "az")          # k000: said Nature -> Nature, ref -> Cropland
+        _call(page, "ax")          # k001: agreed
+        page.evaluate("goTo(0)")
+        note = page.text_content("#cal-feedback")
+        assert "k000" in note and "k001" not in note
+        assert page.evaluate(
+            "document.getElementById('cal-feedback').className") == "miss"
+        page.evaluate("goTo(1)")
+        assert "k001" in page.text_content("#cal-feedback")
+        assert page.evaluate(
+            "document.getElementById('cal-feedback').className") == "hit"
+
+        page.click("#cal-review")
+        table = page.text_content("#loading .cal-table")
+        assert "k000" in table and "k001" in table
+        # disagreements are listed first
+        assert table.index("k000") < table.index("k001")
+        page.click("#loading .cal-table button[data-arg='0']")
+        assert page.evaluate("S.i") == 0
+    finally:
+        ctx.close()
+
+
+def test_qualification_references_stay_hidden_until_the_set_is_done(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/calq.json")
+    try:
+        _call(page, "az")
+        page.evaluate("goTo(0)")
+        assert page.evaluate("calibrationRevealed()") is False
+        assert page.evaluate(
+            "getComputedStyle(document.getElementById('cal-feedback')).display"
+        ) == "none"
+        assert "Nature -> Cropland" not in page.text_content("#panel")
+        for _ in range(3):
+            page.evaluate("goTo(S.points.findIndex(p => !S.labels[p.id]))")
+            _call(page, "az")
+        assert page.evaluate("calibrationRevealed()") is True
+        # the end-of-set report names the samples that differed
+        assert "k000" in page.text_content("#loading .cal-table")
+        page.evaluate("hideLoading(); goTo(0)")
+        assert "k000" in page.text_content("#cal-feedback")
+    finally:
+        ctx.close()
+
+
+def test_the_calibration_review_downloads(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/cal.json")
+    try:
+        _call(page, "az")
+        page.evaluate("goTo(0)")
+        page.click("#cal-review")
+        with page.expect_download() as dl:
+            page.click("#loading button[data-act='calcsv']")
+        text = open(dl.value.path(), encoding="utf-8").read()
+        head, row = text.splitlines()[:2]
+        assert head.startswith("point_id,lon,lat,agree,you_said,reference")
+        assert row.startswith("k000,") and "Nature -> Cropland" in row
+        assert "point=k000" in row
+    finally:
+        ctx.close()
+
+
 # ---------------------------------------------------------------------------
 # the keyboard, and who owns Enter
 #
@@ -979,7 +1118,7 @@ def test_every_dialog_action_is_wired(browser, server):
 
         # every action the dispatcher knows is one some dialog actually emits
         assert set(page.evaluate("Object.keys(LOADING_ACTIONS)")) == {
-            "close", "goto", "queue", "resync", "batch"}
+            "close", "goto", "queue", "resync", "batch", "calcsv"}
         assert not errs, errs
     finally:
         ctx.close()

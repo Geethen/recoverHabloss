@@ -238,6 +238,11 @@ const Expert = {
 };
 
 // ── state ───────────────────────────────────────────────────────────────────
+//: Whether this batch's own saved calls have come back from the sheet yet.
+//: 'pending' and 'failed' are what let the export tell "not fetched yet" apart
+//: from "nothing labelled", which read identically before.
+const LabelPull = { batch: null, state: 'idle', err: '' };
+
 const S = {
   batch: null,        // { batch_id, campaign, channel, points:[...] }
   batchUrl: '',       // where it was fetched from; baked chip paths are
@@ -458,7 +463,8 @@ const LOADING_ACTIONS = {
   goto:   arg => { hideLoading(); goTo(Number(arg)); },
   queue:  arg => { hideLoading(); setQueue(arg); },
   resync: () => { hideLoading(); syncBackoff = 2000; syncNow(); },
-  batch:  arg => { hideLoading(); openBatchFile(arg); }
+  batch:  arg => { hideLoading(); openBatchFile(arg); },
+  calcsv: () => downloadCalibration()
 };
 
 function initLoadingActions() {
@@ -1662,25 +1668,47 @@ let calFeedback = null;
 function noteCalibration(point, rec) {
   if (!S.batch.calibration || S.batch.feedback !== 'immediate') return;
   if (!point.reference) return;
-  calFeedback = {
-    id: point.id,
-    hit: rec.transition === point.reference,
-    said: rec.transition || 'cannot interpret',
-    reference: point.reference
-  };
+  calFeedback = calibrationRow(point, rec);
 }
 
-function renderCalibration() {
+/** One point's call against its reference. */
+function calibrationRow(point, rec) {
+  return { id: point.id, i: S.points.indexOf(point),
+           said: rec.transition || '(cannot interpret)',
+           reference: point.reference,
+           hit: rec.transition === point.reference,
+           confidence: rec.confidence, notes: rec.notes || '' };
+}
+
+/** May references be shown at all yet. `immediate` (teach) shows each one after
+ *  its own call; `end` (qualify) shows none until every point this expert was
+ *  given has been called, so a qualification read is never anchored mid-set. */
+function calibrationRevealed() {
+  if (!S.batch || !S.batch.calibration) return false;
+  if (S.batch.feedback === 'immediate') return true;
+  return S.points.every(p => queueOf(p) === null || !!S.labels[p.id]);
+}
+
+// The feedback line used to show only the LAST save, so stepping back to an
+// earlier sample showed the most recent sample's reference rather than its own
+// (a labeller's report, 2026-09-25). A called point now shows its own; an
+// uncalled one shows the call just made, which is what arrives after Enter.
+function renderCalibration(p) {
   const el = $('cal-feedback');
-  if (!calFeedback) { el.style.display = 'none'; return; }
+  const rec = p && S.labels[p.id];
+  const f = rec && p.reference && calibrationRevealed()
+    ? calibrationRow(p, rec) : calFeedback;
+  if (!f) { el.style.display = 'none'; return; }
   el.style.display = '';
-  el.className = calFeedback.hit ? 'hit' : 'miss';
-  el.innerHTML = calFeedback.hit
-    ? '✓ <b>' + esc(calFeedback.id) + '</b> agreed with the reference — '
-      + esc(calFeedback.reference) + '.'
-    : '✗ <b>' + esc(calFeedback.id) + '</b>: you said <b>'
-      + esc(calFeedback.said) + '</b>, the reference says <b>'
-      + esc(calFeedback.reference) + '</b>.';
+  el.className = f.hit ? 'hit' : 'miss';
+  el.innerHTML = (f.hit
+    ? '✓ <b>' + esc(f.id) + '</b> agreed with the reference — '
+      + esc(f.reference) + '.'
+    : '✗ <b>' + esc(f.id) + '</b>: you said <b>'
+      + esc(f.said) + '</b>, the reference says <b>'
+      + esc(f.reference) + '</b>.')
+    + ' <button type="button" class="linkish" id="cal-review">All samples</button>';
+  $('cal-review').onclick = () => setLoading('Calibration so far', calibrationReview());
 }
 
 /** Agreement with the reference, and where it broke. */
@@ -1689,12 +1717,58 @@ function calibrationScore() {
   for (const point of S.points) {
     const rec = S.labels[point.id];
     if (!rec || !point.reference) continue;
-    rows.push({ id: point.id, said: rec.transition || '(cannot interpret)',
-                reference: point.reference,
-                hit: rec.transition === point.reference });
+    rows.push(calibrationRow(point, rec));
   }
   const hits = rows.filter(r => r.hit).length;
   return { n: rows.length, hits, rows };
+}
+
+/** Every called sample against its reference, each one a link back to the
+ *  point. The pair summary says which boundary; this says which samples, which
+ *  is what a labeller wants to keep open while doing the real batches. */
+function calibrationTable(rows) {
+  return '<div class="cal-wrap"><table class="cal-table"><thead><tr><th></th><th>Sample</th>'
+    + '<th>You said</th><th>Reference</th></tr></thead><tbody>'
+    + rows.map(r => '<tr class="' + (r.hit ? 'hit' : 'miss') + '"><td>'
+      + (r.hit ? '✓' : '✗') + '</td><td><button class="pick" data-act="goto" '
+      + 'data-arg="' + r.i + '">' + esc(r.id) + '</button></td><td>'
+      + esc(r.said) + '</td><td>' + esc(r.reference) + '</td></tr>').join('')
+    + '</tbody></table></div>';
+}
+
+function calibrationReview() {
+  const { rows } = calibrationScore();
+  if (!rows.length) return '<div class="sub left"><p>Nothing called yet.</p></div>'
+    + '<div class="go-row"><button class="go" data-act="close">Close</button></div>';
+  const misses = rows.filter(r => !r.hit);
+  return '<div class="sub left"><p>' + (rows.length - misses.length) + ' of '
+    + rows.length + ' agreed. Disagreements first; click a sample to go back '
+    + 'to it.</p>' + calibrationTable(misses.concat(rows.filter(r => r.hit)))
+    + '</div><div class="go-row"><button class="go secondary" data-act="calcsv">'
+    + 'Download as CSV</button><button class="go" data-act="close">Close</button></div>';
+}
+
+const CAL_COLS = ['point_id', 'lon', 'lat', 'agree', 'you_said', 'reference',
+  'confidence', 'notes', 'link'];
+
+/** The review as a file to keep, with a link that reopens each sample. */
+function downloadCalibration() {
+  if (!calibrationRevealed()) return;
+  const url = new URL(location.href);
+  const rows = calibrationScore().rows.map(r => {
+    const p = S.points[r.i];
+    url.searchParams.set('point', r.id);
+    return { point_id: r.id, lon: p.lon, lat: p.lat, agree: r.hit ? 1 : 0,
+             you_said: r.said, reference: r.reference,
+             confidence: r.confidence, notes: r.notes, link: url.toString() };
+  });
+  const blob = new Blob([toCSV(rows, CAL_COLS)], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = S.batch.campaign + '_' + S.batch.batch_id + '_'
+    + (Expert.id() || 'me') + '_vs_reference.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function calibrationReport() {
@@ -1717,10 +1791,14 @@ function calibrationReport() {
         ? '<p style="margin-top:8px">Where it differed:</p><ul style="margin:6px 0 0 18px">'
           + worst.map(([k, v]) => '<li>' + esc(k) + (v > 1 ? ' ×' + v : '')
                                  + '</li>').join('') + '</ul>'
+          + '<p style="margin-top:8px">The samples that differed:</p>'
+          + calibrationTable(misses)
         : '<p style="margin-top:8px">No disagreements.</p>')
     + '<p style="margin-top:10px">The reference is one careful reading, not '
     + 'truth. A disagreement is worth a conversation about the legend rather '
-    + 'than an assumption that you were wrong.</p></div>';
+    + 'than an assumption that you were wrong. Download the list to keep it '
+    + 'beside you for the real batches; the full list stays under '
+    + '<i>All samples</i> on any called point.</p></div>';
 }
 
 function announceDone() {
@@ -1742,7 +1820,9 @@ function announceDone() {
   const second = S.points.filter(q => outstanding(q, 'second')).length;
   if (S.batch.calibration) {
     setLoading('Calibration complete', calibrationReport()
-      + '<button class="go" data-act="close">Close</button>');
+      + '<div class="go-row"><button class="go secondary" data-act="calcsv">'
+      + 'Download as CSV</button>'
+      + '<button class="go" data-act="close">Close</button></div>');
     return;
   }
   // A batch is not complete while a deferred point is still deferred. Saying
@@ -1889,7 +1969,7 @@ function goTo(i) {
   renderModelHint(p);
   renderOthers(p);
   renderSecondBanner(p);
-  renderCalibration();
+  renderCalibration(p);
   renderEvidence(p);
 
   const rec = S.labels[p.id];
@@ -3836,6 +3916,12 @@ function setSyncPill(text, cls, busy) {
  *  cannot be written from two places with two different ideas of the truth. */
 function updateSyncPill() {
   const held = Outbox.size();
+  // "Up to date" over a batch whose saved calls never came back is the lie that
+  // made a labeller think last week's work was gone. Click it for the reason.
+  if (S.batch && LabelPull.batch === S.batch
+      && LabelPull.state === 'failed' && !held
+      && (SYNC.state === 'accepted' || SYNC.state === 'saved'))
+    return setSyncPill('Saved labels not loaded', 'err');
   switch (SYNC.state) {
     case 'connecting':
       return setSyncPill('Connecting', '', true);
@@ -4041,6 +4127,10 @@ function explainSync() {
         + esc(SYNC.detail) + '</p>' : '')
     + '<details class="setup" style="margin-top:8px"><summary>Technical details</summary>'
     + '<p style="margin-top:6px"><b>Data service:</b> ' + url + '</p></details>'
+    + (LabelPull.batch === S.batch && LabelPull.state === 'failed'
+        ? '<p style="margin-top:6px"><b>Your saved labels could not be fetched:</b> '
+          + esc(LabelPull.err) + '. They are safe in the project database; '
+          + 'reload the page to fetch them again.</p>' : '')
     + (SYNC.collabError ? '<p style="margin-top:6px"><b>Overlap status unavailable:</b> '
         + esc(SYNC.collabError) + '. Your labels are unaffected; the app may not '
         + 'show which other ecologist is assigned to a sample.</p>' : '')
@@ -4068,6 +4158,23 @@ async function sheetGet(params) {
   return res.json();
 }
 
+//: The restore used to be single-shot, and it is the request that brings an
+//: expert's saved calls back into a browser that does not hold them (a new
+//: machine, cleared data, a different browser). /exec answers an HTML 404
+//: about one request in four (see EE_TOKEN_TRIES), and a failed `mine` was
+//: dropped silently -- so a labeller whose 25 rows were safe in the sheet saw an
+//: empty batch and an export that said "nothing labelled" (2026-09-28).
+const SHEET_PULL_TRIES = 4;
+
+async function sheetGetRetry(params) {
+  let err;
+  for (let t = 0; t < SHEET_PULL_TRIES; t++) {
+    if (t) await new Promise(r => setTimeout(r, 1500 * t));
+    try { return await sheetGet(params); } catch (e) { err = e; }
+  }
+  throw err;
+}
+
 /** A sheet row back into the shape the form uses. */
 function fromSheetRow(row) {
   const rec = Object.assign({}, row);
@@ -4088,14 +4195,25 @@ async function pullSheetState(batch) {
   // Both GETs at once. They are independent, and Apps Script cold start is
   // 2-5 s — running them in series doubled a stall the interpreter sits through
   // every time a batch opens.
+  if (who && (LabelPull.batch !== batch || LabelPull.state !== 'ok'))
+    Object.assign(LabelPull, { batch, state: 'pending', err: '' });
   const mine = who
-    ? sheetGet({ action: 'mine', batch: batch.batch_id, expert: who })
+    ? sheetGetRetry({ action: 'mine', batch: batch.batch_id, expert: who })
         .catch(err => ({ _err: err }))
     : Promise.resolve(null);
-  const held = sheetGet({ action: 'labelled', batch: batch.batch_id })
+  const held = sheetGetRetry({ action: 'labelled', batch: batch.batch_id })
     .catch(err => ({ _err: err }));
   const [mineBody, heldBody] = await Promise.all([mine, held]);
   if (gen !== pullGen || S.batch !== batch) return;
+
+  if (mineBody && mineBody._err && LabelPull.state !== 'ok') {
+    Object.assign(LabelPull, { state: 'failed',
+      err: String(mineBody._err.message || mineBody._err) });
+    updateSyncPill();
+  } else if (mineBody) {
+    Object.assign(LabelPull, { state: 'ok', err: '' });
+    updateSyncPill();
+  }
 
   if (mineBody && !mineBody._err) {
     let restored = 0;
@@ -4201,13 +4319,14 @@ const EXPORT_COLS = ['campaign', 'batch_id', 'point_id', 'lon', 'lat',
   'expert_id', 'labeller', 'labelled_at', 'seconds_on_point',
   'uninterpretable_reason', 'imagery_a', 'imagery_b', 'app_version'];
 
-function toCSV(records) {
+function toCSV(records, cols) {
+  cols = cols || EXPORT_COLS;
   const q = v => {
     const s = Array.isArray(v) ? v.join('|') : (v == null ? '' : String(v));
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
-  return EXPORT_COLS.join(',') + '\n'
-    + records.map(r => EXPORT_COLS.map(c => q(r[c])).join(',')).join('\n') + '\n';
+  return cols.join(',') + '\n'
+    + records.map(r => cols.map(c => q(r[c])).join(',')).join('\n') + '\n';
 }
 
 // ── import: an export dropped back in ───────────────────────────────────────
@@ -4337,7 +4456,16 @@ function importLabelsAndReport(rows, name) {
 function exportBatch() {
   if (!S.batch) return;
   const rows = S.points.map(p => S.labels[p.id]).filter(Boolean);
-  if (!rows.length) { alert('Nothing labelled in this batch yet.'); return; }
+  if (!rows.length) {
+    alert(LabelPull.batch === S.batch && LabelPull.state === 'pending'
+      ? 'Your saved labels for this batch are still being fetched from the '
+        + 'project database. Try again in a few seconds.'
+      : LabelPull.batch === S.batch && LabelPull.state === 'failed'
+      ? 'Your saved labels could not be fetched from the project database ('
+        + LabelPull.err + '). They are not lost -- reload the page to try again.'
+      : 'Nothing labelled in this batch yet.');
+    return;
+  }
   const blob = new Blob([toCSV(rows)], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);

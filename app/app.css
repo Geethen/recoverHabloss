@@ -650,6 +650,9 @@
                   border-radius: 10px; line-height: 1.45; }
   #cal-feedback.hit  { background: var(--okbg);  color: var(--ok);  }
   #cal-feedback.miss { background: var(--errbg); color: var(--err); }
+  #cal-feedback button.linkish { font: inherit; color: inherit; background: none;
+    border: none; padding: 0; margin-left: 4px; text-decoration: underline;
+    cursor: pointer; }
 
   #pt-others { font-size: 12px; margin: -4px 0 8px; padding: 5px 10px;
                border-radius: 999px; background: var(--violetbg);
@@ -1186,6 +1189,16 @@
     cursor: pointer; font-size: 14px; color: var(--ink); }
   #loading button.pick:hover { background: var(--control-hover); }
   #loading button.pick.dim { opacity: .55; }
+  /* The calibration review: every called sample against its reference. A
+     25-point set is taller than the overlay, so the table scrolls, not the page. */
+  #loading .cal-wrap { max-height: 52vh; overflow: auto; margin-top: 8px; }
+  #loading table.cal-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  #loading .cal-table th { text-align: left; font-weight: 500; color: var(--muted);
+    padding: 4px 6px; position: sticky; top: 0; background: var(--bg); }
+  #loading .cal-table td { padding: 2px 6px; color: var(--ink); vertical-align: middle; }
+  #loading .cal-table tr.hit td:first-child  { color: var(--ok); }
+  #loading .cal-table tr.miss td:first-child { color: var(--err); }
+  #loading .cal-table button.pick { margin: 1px 0; padding: 3px 10px; font-size: 13px; }
   #loading input.name { font-size: 16px; padding: 9px 16px; width: 220px;
     border: 1px solid var(--line-strong); border-radius: 999px; margin-top: 10px;
     background: var(--control); color: var(--ink); font-family: inherit; }
