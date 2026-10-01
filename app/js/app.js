@@ -1911,9 +1911,15 @@ function nextBatchEntry() {
 // the same imagery, under the same stretch — which is the difference between
 // "we disagree about that point" and "we disagree about the legend".
 //
-// Everything else in the query string is left exactly as it was: `batch`,
-// `campaign` and the Earth Engine settings are read at boot and a rewrite that
-// dropped them would break the link the interpreter was sent. `expert` is
+// `batch` is written too. It used to be carried only if the interpreter had
+// ARRIVED with one, and most arrive through the manifest -- so the link they
+// sent named a point and no batch, and the reader who opened it got their own
+// entry batch and a point it does not carry. A dropped file has no address, so
+// the link then names none (the drop handler clears `S.batchUrl` for this).
+//
+// Everything else in the query string is left exactly as it was: `campaign`
+// and the Earth Engine settings are read at boot and a rewrite that dropped
+// them would break the link the interpreter was sent. `expert` is
 // deliberately NOT written: the annotation key is `(campaign, batch_id,
 // point_id, expert_id)`, and an id that arrives from a pasted URL is an id
 // somebody else chose.
@@ -1922,10 +1928,35 @@ function syncDeepLink() {
   const q = new URLSearchParams(location.search);
   const p = S.points[S.i];
   if (p) q.set('point', p.id); else q.delete('point');
+  q.delete('expert');
+  q.delete('expert_id');
+  const src = deepLinkBatch();
+  if (src) q.set('batch', src); else if (S.batch) q.delete('batch');
   q.set('scheme', chipVis.combo);
   q.set('w', String(chipVis.w));
   try { history.replaceState(null, '', location.pathname + '?' + q.toString()); }
   catch (e) { /* file:// in some browsers refuses; the app still works */ }
+}
+
+/** How a link should name the batch on screen, or null if it has no address:
+ *  the bare file name when it sits beside the manifest (what `resolveBatch`
+ *  expands), otherwise the URL it was fetched from. */
+function deepLinkBatch() {
+  if (!S.batch || !S.batchUrl) return null;
+  const file = S.batchUrl.split('?')[0].split('/').pop();
+  const base = CFG.manifest.replace(/[^/]*$/, '');
+  return S.batchUrl === base + file ? file : S.batchUrl;
+}
+
+/** Put the link to this point, as the address bar has it, on the clipboard --
+ *  the thing a labeller sends when they want a second opinion. */
+async function copyPointLink(a) {
+  if (a.textContent === 'Link copied') return;
+  syncDeepLink();
+  const url = location.href;
+  try { await navigator.clipboard.writeText(url); a.textContent = 'Link copied'; }
+  catch (e) { window.prompt('Copy this link:', url); return; }
+  setTimeout(() => { a.textContent = 'Copy link'; }, 1500);
 }
 
 /** The point a link named, or -1. Matched on `id`, never on index: a batch is
@@ -1961,7 +1992,11 @@ function goTo(i) {
     + ' <a href="' + explorerUrl(p.lat, p.lon) + '" target="_blank" rel="noopener" '
     + 'title="EO Time Series Explorer — Sentinel-2 scenes for this sample as '
     + 'a chip series and an index plot, opened on the scheme and index you are '
-    + 'using here. No sign-in required.">Time-series explorer</a>';
+    + 'using here. No sign-in required.">Time-series explorer</a>'
+    + ' <a href="#" id="pt-share" title="Copy a link that opens this exact '
+    + 'sample, on the same filmstrip scheme and width, for whoever you are '
+    + 'asking. It does not carry your expert id.">Copy link</a>';
+  $('pt-share').onclick = e => { e.preventDefault(); copyPointLink(e.currentTarget); };
 
   syncDeepLink();
 
@@ -8589,7 +8624,11 @@ function initDrop() {
       const rows = trimmed.startsWith('{') || trimmed.startsWith('[')
         ? null : parseCSV(trimmed);
       if (rows && looksLikeLabels(rows)) { importLabelsAndReport(rows, f.name); return; }
-      adoptBatch(parseBatch(text, f.name));
+      const batch = parseBatch(text, f.name);
+      // A file has no address. Left set, the previous batch's URL would be
+      // shared as this one's link and searched for this one's sprites.
+      S.batchUrl = null;
+      adoptBatch(batch);
     }
     catch (err) { setLoading('Could not read that file', esc(err.message)); }
   });

@@ -169,10 +169,13 @@ One URL can serve several campaigns: `?sheetUrl=`, `?campaign=`, `?manifest=`,
 `?batch=`, `?submitToken=`, `?expert=`, `?eeAuth=` and `?zoom=` all override
 `config.js`.
 
-**The view is addressable.** `?point=<id>`, `?scheme=` and `?w=` open a named
-point under a named filmstrip scheme and width, and the app rewrites them as
-the interpreter moves — so the link to send someone is always the one in the
-address bar. It is how a disagreement gets settled: the other reader opens
+**The view is addressable.** `?batch=`, `?point=<id>`, `?scheme=` and `?w=`
+open a named point under a named filmstrip scheme and width, and the app
+rewrites them as the interpreter moves — so the link to send someone is always
+the one in the address bar, and **Copy link** beside the coordinates puts it on
+the clipboard. `batch` is written whichever way the batch was opened (it used
+to survive only if the interpreter had arrived with one, so a manifest-opened
+batch produced links that opened the reader's own batch instead). It is how a disagreement gets settled: the other reader opens
 exactly what you were looking at, on the same imagery and the same stretch. A
 point the batch does not carry resumes normally rather than showing nothing,
 and `expert` is never added to the link — that identity is the reader's own.

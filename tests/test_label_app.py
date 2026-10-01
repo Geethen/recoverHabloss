@@ -148,6 +148,10 @@ def server():
             parts = urllib.parse.urlparse(self.path)
             if parts.path == "/batch.json":
                 return self._json(BATCH)
+            if parts.path == "/manifest.json":
+                return self._json({"batches": [
+                    {"batch_id": BATCH["batch_id"], "file": "batch.json",
+                     "assigned": {"e1": len(BATCH["points"])}}]})
             if parts.path == "/cal.json":
                 return self._json(CAL_BATCH)
             if parts.path == "/calq.json":
@@ -3624,6 +3628,43 @@ def test_a_link_opens_the_point_and_the_view_it_names(browser, server):
         # of the URL the interpreter is now looking at loads no batch at all.
         url = page.evaluate("location.search")
         assert "batch=" in url and "campaign=test-campaign" in url
+    finally:
+        ctx.close()
+
+
+def test_a_manifest_opened_batch_is_named_in_the_link(browser, server):
+    """Most labellers open their batch from the manifest, not from `?batch=`.
+    The link they copy must still name it, or the reader who opens it gets
+    their own entry batch and a point it does not carry."""
+    base, _ = server
+    ctx = _new_context(browser)
+    stub_config(ctx, FIXTURE_CONFIG)
+    ctx.add_init_script(
+        "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
+    page = ctx.new_page()
+    page.goto(f"{base}/label_app.html?sheetUrl=/mock&campaign=test-campaign"
+              f"&expert=e1&manifest=/manifest.json", wait_until="load")
+    try:
+        page.wait_for_function("typeof S !== 'undefined' && S.points.length > 0",
+                               timeout=30000)
+        page.evaluate("hideLoading(); goTo(S.points.findIndex(p => p.id === 't004'))")
+        url = page.evaluate("location.search")
+        assert "batch=batch.json" in url and "point=t004" in url
+        # expert is never added to the link: that identity is the reader's own
+        assert "expert=" not in url and "expert_id=" not in url
+        # the link is the whole handover: a fresh browser lands on the point
+        other = _new_context(browser)
+        try:
+            stub_config(other, FIXTURE_CONFIG)
+            p2 = other.new_page()
+            p2.goto(f"{base}/label_app.html{url}", wait_until="load")
+            p2.wait_for_function("typeof S !== 'undefined' && S.points.length > 0",
+                                 timeout=30000)
+            assert p2.evaluate("S.batch.batch_id") == BATCH["batch_id"]
+            assert p2.evaluate("S.points[S.i].id") == "t004"
+            assert p2.evaluate("Expert.id()") != "e1"
+        finally:
+            other.close()
     finally:
         ctx.close()
 
