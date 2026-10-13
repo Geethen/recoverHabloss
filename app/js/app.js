@@ -1826,8 +1826,6 @@ function calibrationReview() {
 const AUDIT_CANNOT = 'cannot interpret';
 const AUDIT_REASONS = [
   { key: 'assigned_wrong', label: 'The label on file is wrong' },
-  { key: 'definition_changed',
-    label: 'It fits the old definitions, not the current cribsheet' },
   { key: 'ambiguous', label: 'Genuinely ambiguous' }
 ];
 

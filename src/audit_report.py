@@ -41,8 +41,7 @@ from project_paths import project_data_dir
 AUDIT_DIR = project_data_dir("label_audit")
 DEFAULT_SETS = AUDIT_DIR / "audit_sets_20261013_nature4.csv"
 CANNOT = "cannot interpret"
-REASONS = ("assigned_wrong", "definition_changed", "ambiguous", "revised",
-           "not_given")
+REASONS = ("assigned_wrong", "ambiguous", "revised", "not_given")
 #: Who reads which set; the first is reader 1 in the output.
 SET_READERS = {"sup": ("e3", "e4"), "reg": ("e1", "e2")}
 

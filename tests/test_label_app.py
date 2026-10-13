@@ -4599,6 +4599,10 @@ def test_a_mismatch_stays_on_the_point_until_it_has_a_reason(browser, server):
         assert "Nature -> Cropland" in note and "Nature -> Nature" in note
         assert page.evaluate(
             "document.getElementById('cal-feedback').className") == "miss"
+        # two reasons, no more: "fits the old definitions" was dropped (2026-10-13)
+        assert page.eval_on_selector_all(
+            "#cal-feedback button.audit-reason", "b => b.map(x => x.dataset.reason)"
+        ) == ["assigned_wrong", "ambiguous"]
         page.click("#cal-feedback button[data-reason='assigned_wrong']")
         page.wait_for_timeout(200)
         assert _here(page) != "a000"
