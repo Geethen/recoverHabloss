@@ -49,8 +49,11 @@ Usage
 -----
     G=/home/geethen.singh/.pixi/envs/geo/bin/python
 
-    # pull from the Apps Script web app and report
+    # pull from the Apps Script web app and report (token is read from app/config.js)
     $G src/label_rounds.py --url https://script.google.com/.../exec
+
+    # or provide an explicit token
+    $G src/label_rounds.py --url https://script.google.com/.../exec --token ...
 
     # or from files the interpreters exported by hand
     $G src/label_rounds.py --csv app/exports/*.csv
@@ -62,15 +65,18 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
 import pandas as pd
 
-from project_paths import project_data_dir
+from project_paths import REPO_ROOT, project_data_dir
 
 DEFAULT_OUT = project_data_dir("analysis_results") / "label_rounds.csv"
+CONFIG_JS = REPO_ROOT / "app" / "config.js"
 
 #: The six change transitions, in the order the AL ledger reports them.
 CHANGE_CLASSES = ("Artificial -> Cropland", "Artificial -> Nature",
@@ -88,17 +94,37 @@ BASELINE_CHANNEL = "random"
 # ---------------------------------------------------------------------------
 # fetching
 # ---------------------------------------------------------------------------
-def fetch_sheet(url: str) -> pd.DataFrame:
+def read_config_token(config_path: Path = CONFIG_JS) -> str | None:
+    """Read submitToken from app/config.js if present."""
+    if not config_path.is_file():
+        return None
+    match = re.search(r"submitToken:\s*'([^']*)'", config_path.read_text(encoding="utf-8"))
+    return match.group(1) if match else None
+
+
+def fetch_sheet(url: str, token: str | None = None) -> pd.DataFrame:
     """GET ``?action=export`` from the Apps Script web app and parse the CSV."""
+    if token is None:
+        token = read_config_token()
     parts = urllib.parse.urlparse(url)
     query = dict(urllib.parse.parse_qsl(parts.query))
     query["action"] = "export"
+    if token and "token" not in query:
+        query["token"] = token
     full = parts._replace(query=urllib.parse.urlencode(query)).geturl()
-    with urllib.request.urlopen(full, timeout=60) as response:
-        text = response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(full, timeout=60) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as err:
+        text = err.read().decode("utf-8")
     if not text.lstrip().lower().startswith("campaign"):
         # Apps Script answers a deployment problem with an HTML error page, and
         # pandas will happily parse that into a one-column frame of nonsense.
+        if "bad or missing token" in text:
+            raise SystemExit(
+                "the sheet returned something that is not the export CSV -- "
+                "bad or missing token (check --token or submitToken in app/config.js). "
+                "First 200 chars:\n" + text[:200])
         raise SystemExit(
             "the sheet returned something that is not the export CSV -- check "
             "the deployment is a Web app with access 'Anyone'. First 200 chars:\n"
@@ -168,6 +194,19 @@ def split_calibration(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         return frame, frame.iloc[0:0]
     flag = pd.to_numeric(frame["calibration"], errors="coerce").fillna(0)
     return frame.loc[flag != 1].copy(), frame.loc[flag == 1].copy()
+
+
+def split_audit(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Audit rows (batch_id 'aud_*') out of the campaign rows.
+
+    An audit row re-reads a point that already has a label; it is not an
+    acquisition and would be credited to whichever channel drew the point.
+    Read them with src/audit_report.py.
+    """
+    if "batch_id" not in frame.columns:
+        return frame, frame.iloc[0:0]
+    flag = frame["batch_id"].astype(str).str.startswith("aud_")
+    return frame.loc[~flag].copy(), frame.loc[flag].copy()
 
 
 def calibration_report(frame: pd.DataFrame) -> None:
@@ -371,6 +410,10 @@ def agreement(frame: pd.DataFrame) -> tuple[int, float, pd.DataFrame]:
 
 def report(all_rows: pd.DataFrame) -> None:
     frame, calibration = split_calibration(all_rows)
+    frame, audit = split_audit(frame)
+    if not audit.empty:
+        print(f"\n{len(audit)} audit rows set aside; "
+              "read them with src/audit_report.py")
     if not calibration.empty:
         calibration_report(calibration)
     if frame.empty:
@@ -469,6 +512,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", help="Apps Script web app /exec URL")
+    parser.add_argument("--token",
+                        help="submit token for the Apps Script endpoint "
+                             "(default: read from app/config.js)")
     parser.add_argument("--csv", nargs="*", type=Path, default=[],
                         help="exported label CSVs instead of (or as well as) --url")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
@@ -482,7 +528,7 @@ def main() -> None:
 
     frames = []
     if args.url:
-        frames.append(fetch_sheet(args.url))
+        frames.append(fetch_sheet(args.url, token=args.token))
     if args.csv:
         frames.append(read_files(args.csv))
     if not frames:

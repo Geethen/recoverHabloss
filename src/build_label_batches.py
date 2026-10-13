@@ -91,7 +91,8 @@ def show(path: Path) -> str:
 #: saved, because "rank 1, uncertainty" tells the interpreter the model finds
 #: this point hard before they have looked at it.)
 FIRST_CLASS = ("id", "lon", "lat", "channel", "rank", "score", "cell_km",
-               "reference", "primary_expert", "required_readers")
+               "reference", "primary_expert", "required_readers",
+               "assigned", "assigned_note")
 
 #: Fraction of every batch that gets a deliberate second reading. §AL asks for
 #: ~5%: inter-rater agreement is the campaign's only measurement of the label
@@ -323,6 +324,14 @@ def to_points(frame: pd.DataFrame, channel: str | None) -> list[dict]:
             point["score"] = float(row["score"])
         if "reference" in frame.columns and pd.notna(row.get("reference")):
             point["reference"] = str(row["reference"])
+        # Audit only: the label(s) already on file, revealed after the blind
+        # call. First-class for the same reason as `reference` -- in `meta` it
+        # would render beside the buttons and the audit would measure nothing.
+        # `|`-separated in the table because a disagreement carries two.
+        if "assigned" in frame.columns and pd.notna(row.get("assigned")):
+            point["assigned"] = [s.strip() for s in str(row["assigned"]).split("|")]
+            if pd.notna(row.get("assigned_note")):
+                point["assigned_note"] = str(row["assigned_note"])
         for column in ("primary_expert", "required_readers"):
             if column in frame.columns and pd.notna(row.get(column)):
                 value = row[column]
@@ -359,7 +368,7 @@ def write_batches(frame: pd.DataFrame, *, campaign: str, channel: str | None,
                   feedback: str = "immediate", stage: str | None = None,
                   experts: list[str] | None = None,
                   double_frac: float = DEFAULT_DOUBLE_FRAC,
-                  evidence: bool = False) -> list[dict]:
+                  evidence: bool = False, audit: bool = False) -> list[dict]:
     outdir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     manifest = []
@@ -383,6 +392,8 @@ def write_batches(frame: pd.DataFrame, *, campaign: str, channel: str | None,
             "experts": experts or None,
             "points": points,
         }
+        if audit:
+            payload["audit"] = True
         if evidence:
             from build_batch_evidence import add_evidence, size_note
             print(f"  {batch_id}: baking evidence")
@@ -394,7 +405,7 @@ def write_batches(frame: pd.DataFrame, *, campaign: str, channel: str | None,
         manifest.append({"batch_id": batch_id, "file": path.name,
                          "n": len(points), "channel": channel,
                          "calibration": calibration, "stage": stage,
-                         "created": now,
+                         "audit": audit, "created": now,
                          # Per expert, so the app can answer "resume my assigned
                          # batch" without downloading every batch in the
                          # campaign. `assigned_to` stays for a human reading the
