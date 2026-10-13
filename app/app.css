@@ -266,6 +266,10 @@
   }
   button.pill:hover { background: var(--control-hover); }
   .pill.ok   { background: var(--okbg);   color: var(--ok);   }
+  /* A finished batch in the picker: the same green as the completed pill. */
+  .badge-done { display: inline-block; margin-left: 6px; padding: 1px 8px;
+    border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: var(--okbg); color: var(--ok); }
   .pill.warn { background: var(--warnbg); color: var(--warn); }
   .pill.err  { background: var(--errbg);  color: var(--err);  }
   /* Fixed width because the label swaps between "dark" and "light" on click,
@@ -294,13 +298,37 @@
     display: flex; flex-direction: column; gap: 0; align-items: stretch;
     width: 300px;
     max-height: calc(100% - 32px); overflow-y: auto; overflow-x: hidden;
-    padding: 0;
+    padding: 0 0 12px; scroll-padding-top: 72px;
     background: var(--glass-2);
     backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--glass-edge); border-radius: 42px;
     box-shadow: var(--shadow);
   }
+  /* ── layer legend: a separate glass box left of the controls stack ──────── */
+  #ee-legend-box {
+    position: absolute; z-index: 3; bottom: 16px;
+    right: calc(var(--panel-w, 430px) + 28px + 300px + 12px);
+    width: 240px; max-height: calc(100% - 32px); overflow-y: auto;
+    padding: 12px 16px 14px 18px; box-sizing: border-box;
+    background: var(--glass-2);
+    backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--glass-edge); border-radius: 24px;
+    box-shadow: var(--shadow);
+  }
+  #ee-legend-box .lg-head { display: flex; align-items: center; gap: 8px;
+    font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  #ee-legend-box .lg-head span { flex: 1; }
+  #ee-legend-close { border: none; background: var(--control); color: var(--muted);
+    border-radius: 999px; width: 24px; height: 24px; line-height: 1; padding: 0;
+    font-size: 16px; cursor: pointer; box-shadow: none; }
+  #ee-legend-close:hover { background: var(--control-hover); }
+  #ee-legend-box #ee-legend { display: block; }
+
+  /* Header stays pinned so scrolled cards pass underneath rather than clipping
+     at the rounded top corner; --surface provides an opaque background so
+     passing cards do not show through --glass-2 in either theme. */
   .controls-head {
+    position: sticky; top: 0; z-index: 2; background: var(--surface);
     flex: 0 0 auto; min-height: 72px; padding: 16px 20px 12px 24px;
     display: flex; align-items: center; gap: 12px;
   }
@@ -653,6 +681,16 @@
   #cal-feedback button.linkish { font: inherit; color: inherit; background: none;
     border: none; padding: 0; margin-left: 4px; text-decoration: underline;
     cursor: pointer; }
+
+  /* Label audit: the reveal and, on a mismatch, the reason buttons. */
+  #cal-feedback .audit-note { opacity: .8; }
+  #cal-feedback .audit-reasons { margin-top: 6px; display: flex; flex-wrap: wrap;
+    gap: 6px; align-items: center; }
+  #cal-feedback button.audit-reason { font: inherit; font-size: 12px; color: inherit;
+    background: transparent; border: 1px solid currentColor; border-radius: 999px;
+    padding: 3px 10px; cursor: pointer; }
+  #cal-feedback button.audit-reason.on { color: var(--errbg); background: var(--err); }
+  #cal-feedback .audit-hint { width: 100%; font-size: 12px; opacity: .8; }
 
   #pt-others { font-size: 12px; margin: -4px 0 8px; padding: 5px 10px;
                border-radius: 999px; background: var(--violetbg);
@@ -1221,9 +1259,12 @@
      larger than the 11.5 px this app used before the scale came up. */
   @media (max-height: 780px) {
     body { font-size: 13px; }
+    #ee-legend-box { width: 200px; bottom: 10px;
+      right: calc(var(--panel-w, 430px) + 20px + 260px + 12px); }
     #ctrl-right {
       top: 10px; right: calc(var(--panel-w, 430px) + 20px); width: 260px;
       max-height: calc(100% - 20px); border-radius: 30px;
+      padding-bottom: 8px; scroll-padding-top: 48px;
     }
     .controls-head { min-height: 48px; padding: 7px 11px 6px 16px; }
     .controls-head .title { font-size: 18px; }

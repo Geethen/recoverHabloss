@@ -99,7 +99,13 @@ var COLS = ['campaign', 'batch_id', 'point_id', 'lon', 'lat',
             'calibration', 'reference', 'channel', 'rank', 'score',
             'labeller', 'labelled_at', 'seconds_on_point',
             'imagery_a', 'imagery_b', 'app_version', 'received_at',
-            'expert_id', 'uninterpretable_reason'];
+            'expert_id', 'uninterpretable_reason',
+            // The label audit (2026-10-13). `assigned` is the label on file,
+            // `blind_transition` the reader's first call -- made before
+            // `assigned` was shown, and never changed after -- and
+            // `mismatch_reason` why they differ. Appended, so every row
+            // written before them keeps its columns.
+            'assigned', 'blind_transition', 'mismatch_reason'];
 
 //: 1-based sheet columns for the four key fields and the handful `doGet` reads.
 //: Computed once rather than per row: COLS.indexOf inside a loop over 20k rows
@@ -698,6 +704,10 @@ function doGet(e) {
     return json_({ ok: true, service: 'recover-labelling',
                    key: ['campaign', 'batch_id', 'point_id', 'expert_id'],
                    token_required: !!SUBMIT_TOKEN,
+                   // The app reads this before an audit batch may be saved: an
+                   // older copy of this script would accept the rows and
+                   // silently drop the columns it does not know.
+                   cols: COLS,
                    ee_service_account: !!PropertiesService.getScriptProperties()
                      .getProperty(EE_KEY_PROP) });
   if (!tokenOk_(e.parameter.token))

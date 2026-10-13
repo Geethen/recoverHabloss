@@ -101,7 +101,11 @@ window.LABEL_APP_CONFIG = {
   // be changed at will. Never re-use an id for a different person.
   experts: [
     { id: 'e1', name: 'Dina' },
-    { id: 'e2', name: 'Øyvind' }
+    { id: 'e2', name: 'Øyvind' },
+    // The label audit's expert readers (2026-10-13). Must also be added to the
+    // LABEL_APP_CONFIG_JS Actions secret, or the published app shows them zero points.
+    { id: 'e3', name: 'Zander' },
+    { id: 'e4', name: 'Geethen' }
   ],
 
   // ── campaign ──────────────────────────────────────────────────────────────

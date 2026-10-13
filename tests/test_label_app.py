@@ -89,6 +89,10 @@ class Sheet:
         #: deployments have no service account, and that case must leave the
         #: app exactly where it was rather than showing a fault.
         self.ee: dict | None = None
+        #: The columns `?action=ping` reports. Code.gs names its COLS there so
+        #: the app can tell a script that stores the audit columns from an
+        #: older copy that would accept the rows and drop them.
+        self.cols: list | None = COLS + AUDIT_COLS
 
     def put(self, row: dict) -> None:
         row = dict(row)
@@ -156,6 +160,8 @@ def server():
                 return self._json(CAL_BATCH)
             if parts.path == "/calq.json":
                 return self._json(CALQ_BATCH)
+            if parts.path == "/aud.json":
+                return self._json(AUD_BATCH)
             if parts.path == "/assigned.json":
                 return self._json(ASSIGNED_BATCH)
             if parts.path == "/evidence.json":
@@ -214,9 +220,11 @@ def server():
                                        "error": "no service account configured"})
                 return self._json(dict({"ok": True, "configured": True},
                                        **sheet.ee))
-            return self._json({"ok": True, "service": "mock",
-                               "key": ["campaign", "batch_id", "point_id",
-                                       "expert_id"]})
+            ping = {"ok": True, "service": "mock",
+                    "key": ["campaign", "batch_id", "point_id", "expert_id"]}
+            if sheet.cols is not None:
+                ping["cols"] = sheet.cols
+            return self._json(ping)
 
         def do_POST(self):
             if not self.path.startswith("/mock"):
@@ -261,6 +269,7 @@ def clean_sheet(server):
     sheet.rows.clear()
     sheet.fail = False
     sheet.ee = None
+    sheet.cols = COLS + AUDIT_COLS
     yield
 
 
@@ -302,6 +311,27 @@ CAL_BATCH = {
 #: The qualification stage: same points, answers withheld until the set is done.
 CALQ_BATCH = {**CAL_BATCH, "batch_id": "calq001", "feedback": "end",
               "stage": "qualify"}
+
+AUDIT_COLS = ["assigned", "blind_transition", "mismatch_reason"]
+
+#: A label-audit batch. a002 has no `meta` at all, so `assigned` goes through
+#: `stripKnown` -- the path a dropped-in file takes, and the one that would put
+#: the label on file in the "about this location" table if KNOWN missed it.
+AUD_BATCH = {
+    "campaign": "test-campaign", "batch_id": "aud_t001", "channel": "audit",
+    "audit": True, "stage": "audit", "feedback": "immediate",
+    "instructions": None,
+    "points": [
+        {"id": "a000", "lon": 10.0, "lat": 60.0, "cell_km": 5, "meta": {},
+         "assigned": ["Nature -> Cropland"],
+         "assigned_note": "Original data (recover): Nature -> Cropland"},
+        {"id": "a001", "lon": 10.01, "lat": 60.0, "cell_km": 5, "meta": {},
+         "assigned": ["Nature -> Nature", "Nature -> Cropland"],
+         "assigned_note": "Labelling round one: the two readers disagreed."},
+        {"id": "a002", "lon": 10.02, "lat": 60.0, "cell_km": 5,
+         "assigned": ["Cropland -> Cropland"]},
+    ],
+}
 
 EMPTY_CONFIG = "window.LABEL_APP_CONFIG = {};"
 
@@ -1147,6 +1177,54 @@ def test_a_batch_filename_with_a_quote_in_it_survives(browser, server):
         ctx.close()
 
 
+def test_batches_say_who_they_are_for_by_name(browser, server):
+    """The dropdown and the picker used to print `e1, e2` (or nothing). A
+    labeller needs the NAMES of whoever a batch is for, and an audit batch reads
+    "label audit", not the raw channel word."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="e1")
+    try:
+        page.evaluate("""S.manifest = [
+          {batch_id: "both", file: "both.json", n: 10, assigned: {e1: 10, e2: 10}},
+          {batch_id: "theirs", file: "theirs.json", n: 7, assigned: {e2: 7},
+           assigned_to: "e2", audit: true, channel: "audit"}]""")
+        page.evaluate("showBatchPicker('probe')")
+        page.wait_for_timeout(200)
+        rows = page.evaluate(
+            "[...document.querySelectorAll('#loading [data-act=\"batch\"]')]"
+            ".map(b => b.textContent)")
+        assert rows[0].startswith("both") and "for you (with expert two)" in rows[0]
+        assert "for expert two" in rows[1] and "label audit" in rows[1]
+        assert not any(i in r for r in rows for i in ("e1", "e2", "audit channel"))
+        opts = page.evaluate("S.manifest.map(batchWho).map(w => w.names)")
+        assert opts == ["expert one & expert two", "expert two"]
+    finally:
+        ctx.close()
+
+
+def test_the_batch_dropdown_names_labellers_not_ids(browser, server):
+    base, _ = server
+    ctx = _new_context(browser)
+    stub_config(ctx, FIXTURE_CONFIG)
+    ctx.add_init_script(
+        "try { localStorage.setItem('recover-labels:seen-intro','1'); } catch (e) {}")
+    ctx.route(base + "/manifest.json", lambda r: r.fulfill(
+        content_type="application/json",
+        body='{"batches": [{"batch_id": "aud1", "file": "batch.json", "n": 20,'
+             ' "audit": true, "channel": "audit", "assigned": {"e1": 10, "e2": 10}}]}'))
+    page = ctx.new_page()
+    page.goto(f"{base}/label_app.html?sheetUrl=/mock&campaign=test-campaign"
+              f"&expert=e2&manifest=/manifest.json", wait_until="load")
+    try:
+        page.wait_for_function("typeof S !== 'undefined' && S.points.length > 0",
+                               timeout=30000)
+        txt = page.evaluate("$('batch-select').options[0].textContent")
+        assert "10 for you (with expert one)" in txt and "label audit" in txt
+        assert "e1" not in txt and "e2" not in txt
+    finally:
+        ctx.close()
+
+
 # ---------------------------------------------------------------------------
 # what is pinned with the call, and what scrolls with the evidence
 # ---------------------------------------------------------------------------
@@ -1505,6 +1583,57 @@ def test_the_map_info_control_sits_clear_of_the_labelling_panel(browser, server)
         assert position["infoLeft"] >= 0, position
         assert position["infoRight"] <= position["panelLeft"] - 4, position
         assert position["infoBottom"] <= position["viewportHeight"], position
+    finally:
+        ctx.close()
+
+
+def test_the_layer_legend_is_its_own_box_left_of_the_controls(browser, server):
+    """The legend used to live inside the Map controls card.
+
+    It is now a sibling of `#ctrl-right`, to its left, bottom-aligned with it
+    (also when the stack is collapsed), hidden while no layer is on, and the
+    close button hides it without touching the layer.
+    """
+    base, _ = server
+    page, ctx = open_app(browser, base, who="kim")
+    try:
+        page.set_viewport_size({"width": 1600, "height": 900})
+        page.wait_for_timeout(300)
+        assert page.evaluate(
+            "!document.getElementById('ctrl-right').contains("
+            "document.getElementById('ee-legend-box'))")
+        assert page.evaluate(
+            "getComputedStyle(document.getElementById('ee-legend-box')).display") == "none"
+        show = """() => {
+          eeActive.key = Object.keys(EE_LAYERS)[0]; renderEELegend();
+        }"""
+        geom = """() => {
+          const b = document.getElementById('ee-legend-box').getBoundingClientRect();
+          const c = document.getElementById('ctrl-right').getBoundingClientRect();
+          const p = document.getElementById('panel').getBoundingClientRect();
+          return {boxRight: b.right, ctrlLeft: c.left, boxBottom: b.bottom,
+                  ctrlBottom: c.bottom, boxLeft: b.left, panelLeft: p.left,
+                  w: b.width};
+        }"""
+        page.evaluate(show)
+        page.wait_for_timeout(200)
+        g = page.evaluate(geom)
+        assert g["w"] > 0 and g["boxLeft"] >= 0, g
+        assert g["boxRight"] <= g["ctrlLeft"] - 8, g
+        assert abs(g["boxBottom"] - g["ctrlBottom"]) <= 2, g
+        page.click("#btn-cards")
+        page.wait_for_timeout(300)
+        g = page.evaluate(geom)
+        assert abs(g["boxBottom"] - g["ctrlBottom"]) <= 2, g
+        # close hides the box, not the layer
+        page.click("#ee-legend-close")
+        assert page.evaluate(
+            "getComputedStyle(document.getElementById('ee-legend-box')).display") == "none"
+        assert page.evaluate("!!eeActive.key")
+        # no layer, no box
+        page.evaluate("eeActive.key = null; renderEELegend();")
+        assert page.evaluate(
+            "getComputedStyle(document.getElementById('ee-legend-box')).display") == "none"
     finally:
         ctx.close()
 
@@ -4405,5 +4534,287 @@ def test_the_archive_filters_to_releases_with_imagery_here(browser, server):
             "the archive appear to hang on nothing")
         assert on.count("wbSnapToTargets()") == 2, (
             "the snap must run again inside the filtered view")
+    finally:
+        ctx.close()
+
+
+# ── label audit ──────────────────────────────────────────────────────────────
+# An audit batch re-reads points that already have a label. The label on file is
+# shown only after the reader's own call, and that first call is kept as
+# `blind_transition` whatever happens after the reveal. Showing it first would
+# turn an error-rate measurement into a confirmation rate.
+
+def _goto_id(page, pid):
+    page.evaluate(f"goTo(S.points.findIndex(p => p.id === '{pid}'))")
+    page.wait_for_timeout(150)
+
+
+def _here(page):
+    return page.evaluate("S.points[S.i].id")
+
+
+def test_the_label_on_file_is_never_shown_before_the_call(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        assert page.evaluate("S.batch.audit") is True
+        for pid, on_file in (("a000", "Nature -> Cropland"),
+                             ("a002", "Cropland -> Cropland")):
+            _goto_id(page, pid)
+            assert on_file not in page.text_content("#panel")
+            assert "assigned" not in page.text_content("#meta-table").lower()
+            assert page.evaluate(
+                "getComputedStyle(document.getElementById('cal-feedback')).display"
+            ) == "none"
+        # the dropped-in path: no `meta`, so stripKnown builds it
+        assert page.evaluate(
+            "S.points.find(p => p.id === 'a002').meta.assigned") is None
+    finally:
+        ctx.close()
+
+
+def test_a_matching_audit_call_moves_on_with_its_blind_reading(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a000")
+        _call(page, "ax")                                  # Nature -> Cropland
+        assert _here(page) != "a000"
+        rec = page.evaluate("S.labels['a000']")
+        assert rec["assigned"] == "Nature -> Cropland"
+        assert rec["blind_transition"] == "Nature -> Cropland"
+        assert rec["mismatch_reason"] == ""
+    finally:
+        ctx.close()
+
+
+def test_a_mismatch_stays_on_the_point_until_it_has_a_reason(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a000")
+        _call(page, "az")                                  # Nature -> Nature
+        assert _here(page) == "a000"
+        note = page.text_content("#cal-feedback")
+        assert "Nature -> Cropland" in note and "Nature -> Nature" in note
+        assert page.evaluate(
+            "document.getElementById('cal-feedback').className") == "miss"
+        page.click("#cal-feedback button[data-reason='assigned_wrong']")
+        page.wait_for_timeout(200)
+        assert _here(page) != "a000"
+        rec = page.evaluate("S.labels['a000']")
+        assert rec["mismatch_reason"] == "assigned_wrong"
+        assert rec["blind_transition"] == "Nature -> Nature"
+        assert rec["transition"] == "Nature -> Nature"
+    finally:
+        ctx.close()
+
+
+def test_revising_after_the_reveal_keeps_the_blind_call(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a000")
+        _call(page, "az")                                  # blind: Nature -> Nature
+        assert _here(page) == "a000"
+        # Revise to the file. Only the 2024 class: the saved call is loaded
+        # back into the form, and the class and confidence keys toggle.
+        page.keyboard.press("x")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(400)
+        assert _here(page) != "a000"
+        rec = page.evaluate("S.labels['a000']")
+        assert rec["blind_transition"] == "Nature -> Nature"
+        assert rec["transition"] == "Nature -> Cropland"
+        assert rec["mismatch_reason"] == "revised"
+        # and going back shows both, not just the final call
+        _goto_id(page, "a000")
+        note = page.text_content("#cal-feedback")
+        assert "revised to" in note and "Nature -> Nature" in note
+    finally:
+        ctx.close()
+
+
+def test_either_of_two_readings_on_file_is_a_match(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a001")
+        _call(page, "az")                                  # Nature -> Nature
+        assert _here(page) != "a001"
+        rec = page.evaluate("S.labels['a001']")
+        assert rec["assigned"] == "Nature -> Nature|Nature -> Cropland"
+        assert rec["mismatch_reason"] == ""
+    finally:
+        ctx.close()
+
+
+def test_audit_rows_reach_the_sheet_with_their_columns(browser, server):
+    base, sheet = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a000")
+        _call(page, "ax")
+        page.evaluate("syncNow()")
+        page.wait_for_function("Outbox.size() === 0", timeout=10000)
+        [row] = sheet.rows_for("a000")
+        assert row["blind_transition"] == "Nature -> Cropland"
+        assert row["assigned"] == "Nature -> Cropland"
+        assert row["batch_id"] == "aud_t001"
+    finally:
+        ctx.close()
+
+
+def test_a_script_without_the_audit_columns_holds_audit_rows(browser, server):
+    """A copy of Code.gs from before the audit accepts the POST, acknowledges
+    every row and drops the three columns it does not know -- the blind call
+    among them. The rows must wait in the outbox instead."""
+    base, sheet = server
+    sheet.cols = None                       # an old script: ping names no columns
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a000")
+        _call(page, "ax")
+        page.evaluate("syncNow()")
+        page.wait_for_timeout(500)
+        assert sheet.rows_for("a000") == []
+        assert page.evaluate("Outbox.size()") == 1
+        assert "predates the label audit" in page.evaluate("SYNC.detail")
+    finally:
+        ctx.close()
+
+
+def test_the_audit_columns_are_appended_not_inserted():
+    """Rows are addressed by position. A column inserted anywhere but the right
+    shifts every existing row's fields by one."""
+    text = CODE_GS.read_text()
+    cols = re.findall(r"'([a-z_0-9]+)'", text.split("var COLS")[1].split("];")[0])
+    assert cols[-3:] == AUDIT_COLS
+    assert cols.index("uninterpretable_reason") == len(cols) - 4
+    ping = text.split("action === 'ping'")[1].split("});")[0]
+    assert "cols: COLS" in ping
+    js = APP_JS.read_text()
+    export = js.split("const EXPORT_COLS")[1].split("];")[0]
+    for c in AUDIT_COLS:
+        assert f"'{c}'" in export
+    known = js.split("const KNOWN")[1].split("]);")[0]
+    assert "'assigned'" in known and "'assigned_note'" in known
+
+
+def test_redeploying_the_script_releases_held_audit_rows(browser, server):
+    """Seen stale once, the app must ask again on the next sync: a Code.gs
+    redeployed mid-session has to release the held rows on Retry, not only
+    after a reload."""
+    base, sheet = server
+    sheet.cols = None
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        _goto_id(page, "a000")
+        _call(page, "ax")
+        page.evaluate("syncNow()")
+        page.wait_for_timeout(500)
+        assert sheet.rows_for("a000") == []
+        sheet.cols = COLS + AUDIT_COLS                 # the script is updated
+        page.evaluate("syncNow()")
+        page.wait_for_function("Outbox.size() === 0", timeout=10000)
+        [row] = sheet.rows_for("a000")
+        assert row["blind_transition"] == "Nature -> Cropland"
+    finally:
+        ctx.close()
+
+
+
+# ── batch completed ──────────────────────────────────────────────────────────
+
+def test_the_progress_pill_says_when_the_batch_is_complete(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="jo", batch="/aud.json")
+    try:
+        pill = "#pill-progress"
+        assert "complete" not in page.text_content(pill).lower()
+        _goto_id(page, "a000")
+        _call(page, "az")                  # mismatch: stays, owes a reason
+        _goto_id(page, "a001")
+        _call(page, "az")                  # matches one of two readings
+        _goto_id(page, "a002")
+        _call(page, "sx")                  # Cropland -> Cropland: matches
+        page.evaluate("hideLoading()")
+        # every point is called, but a000 still owes its reason: not complete
+        text = page.text_content(pill)
+        assert "1 need a reason" in text and "complete" not in text.lower()
+        assert "warn" in page.get_attribute(pill, "class")
+        _goto_id(page, "a000")
+        page.click("#cal-feedback button[data-reason='ambiguous']")
+        page.wait_for_timeout(300)
+        page.evaluate("hideLoading()")
+        text = page.text_content(pill)
+        assert text.startswith("\u2713 Batch complete") and "3 / 3" in text
+        assert "ok" in page.get_attribute(pill, "class").split()
+    finally:
+        ctx.close()
+
+
+def test_a_completed_batch_is_marked_in_the_picker(browser, server):
+    base, _ = server
+    page, ctx = open_app(browser, base, who="e1", batch="/batch.json")
+    try:
+        page.evaluate("""() => {
+          S.manifest = [{batch_id: 'done01', file: 'done01.json', n: 2,
+                         assigned: {e1: 2}},
+                        {batch_id: 'todo01', file: 'todo01.json', n: 2,
+                         assigned: {e1: 2}}];
+          localStorage.setItem(LS.key('done01'), JSON.stringify(
+            {a: {transition: 'Nature -> Nature'}, b: {transition: 'Nature -> Nature'}}));
+          localStorage.setItem(LS.key('todo01'), JSON.stringify(
+            {a: {transition: 'Nature -> Nature'}}));
+          renderBatchSelect();
+          showBatchPicker('');
+        }""")
+        rows = page.locator("#loading button.pick")
+        done_row = rows.filter(has_text="done01").text_content()
+        todo_row = rows.filter(has_text="todo01").text_content()
+        assert "completed" in done_row and "completed" not in todo_row
+        opts = page.eval_on_selector_all("#batch-select option", "o => o.map(x => x.text)")
+        assert any("done01" in o and "completed" in o for o in opts)
+        assert not any("todo01" in o and "completed" in o for o in opts)
+        # an audit row with an unexplained mismatch keeps a batch unfinished
+        assert page.evaluate("""auditRecOwes({assigned: 'Nature -> Cropland',
+            blind_transition: 'Nature -> Nature', transition: 'Nature -> Nature',
+            mismatch_reason: ''})""") is True
+    finally:
+        ctx.close()
+
+
+def test_a_closed_round_shows_completed_for_everyone(browser, server):
+    """Round one is finished whatever this browser holds: a reader who was
+    never assigned it, or one on a new machine, sees it completed, and nobody
+    is routed back into it."""
+    base, _ = server
+    page, ctx = open_app(browser, base, who="e2", batch="/batch.json")
+    try:
+        page.evaluate("""() => {
+          S.manifest = [{batch_id: 'cov001', file: 'cov001.json', n: 75,
+                         assigned: {e1: 75}, completed: true},
+                        {batch_id: 'rar001', file: 'rar001.json', n: 75,
+                         assigned: {e2: 75}, completed: true},
+                        {batch_id: 'aud_reg001', file: 'aud_reg001.json', n: 100,
+                         assigned: {e2: 100}, audit: true, channel: 'audit'},
+                        {batch_id: 't001', file: 'batch.json', n: 10,
+                         completed: true}];
+          renderBatchSelect();
+          showBatchPicker('');
+        }""")
+        rows = page.locator("#loading button.pick")
+        # not assigned to e2, and nothing in this browser: still completed
+        assert "completed" in rows.filter(has_text="cov001").text_content()
+        assert "completed" in rows.filter(has_text="rar001").text_content()
+        assert "completed" not in rows.filter(has_text="aud_reg001").text_content()
+        opts = page.eval_on_selector_all("#batch-select option", "o => o.map(x => x.text)")
+        assert any("cov001" in o and "completed" in o for o in opts)
+        # routing skips the closed batch that IS assigned to e2
+        assert page.evaluate("pickEntryBatch().batch_id") == "aud_reg001"
+        # and the open batch, closed in the manifest, says so in the header
+        page.evaluate("hideLoading(); updateProgress()")
+        assert page.text_content("#pill-progress").strip() == "✓ Batch completed"
     finally:
         ctx.close()

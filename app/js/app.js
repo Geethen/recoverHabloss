@@ -407,6 +407,35 @@ function esc(s) {
     ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 }
 function $(id) { return document.getElementById(id); }
+/** Roster ids -> display names ("e1" -> "Dina"); an id not on the roster shows
+ *  as itself. */
+function expertNames(ids) {
+  return (ids || []).map(i => {
+    const r = ROSTER.find(e => e.id === String(i));
+    return r ? r.name : String(i);
+  });
+}
+function joinNames(names) {
+  return names.length > 2 ? names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1]
+                          : names.join(' & ');
+}
+/** Who a manifest batch is for, by name. `ids` comes from `assigned` (keys) or
+ *  the legacy `assigned_to` string ("e1, e2"); `mine` is this expert's count. */
+function batchWho(b) {
+  const me = Expert.id();
+  const a = b.assigned || {};
+  let ids = Object.keys(a).filter(k => a[k] > 0);
+  if (!ids.length && b.assigned_to)
+    ids = String(b.assigned_to).split(/[,|&]/).map(x => x.trim()).filter(Boolean);
+  const mine = (a[me] || 0) || (ids.includes(me) ? (b.n || 0) : 0);
+  const others = expertNames(ids.filter(i => i !== me));
+  return { ids, mine, names: joinNames(expertNames(ids)),
+           others: others.length ? joinNames(others) : '' };
+}
+/** The channel as a person should read it: audit batches are "label audit". */
+function channelLabel(b) {
+  return (b.audit || b.channel === 'audit') ? 'label audit' : (b.channel || '');
+}
 // `#loading` is two different things wearing one overlay: five dismissible
 // dialogs (batch complete, deferred points, the sync read-out, the help brief)
 // and two GATES that must not be dismissed -- the first-run brief and the
@@ -772,6 +801,14 @@ function normalisePoints(raw, batchId) {
       // Calibration only. Pulled out explicitly so it can never fall through
       // into `meta`, which is rendered next to the buttons.
       reference: props.reference || null,
+      // Audit only (build_audit_batches.py): the label(s) already on file --
+      // two where earlier readers disagreed. Shown only after this reader has
+      // saved a call of their own; explicit for the same reason as `reference`,
+      // and named in KNOWN so a dropped-in file cannot leak it into `meta`.
+      assigned: Array.isArray(props.assigned) ? props.assigned.map(String)
+        : (typeof props.assigned === 'string' && props.assigned
+           ? props.assigned.split('|').map(s => s.trim()).filter(Boolean) : null),
+      assigned_note: props.assigned_note || null,
       meta: props.meta || stripKnown(props)
     };
   }).filter(p => isFinite(p.lon) && isFinite(p.lat));
@@ -787,7 +824,7 @@ function numOr(value, fallback) {
 const KNOWN = new Set(['id','point_id','plot_id','cell_id','lon','lat','longitude',
   'latitude','x','y','channel','rank','score','cell_km','prior','conformal_set',
   'reference','meta','geometry','type','primary_expert','required_readers',
-  'evidence','cell']);
+  'evidence','cell','assigned','assigned_note']);
 function stripKnown(props) {
   const out = {};
   for (const k of Object.keys(props)) if (!KNOWN.has(k)) out[k] = props[k];
@@ -817,6 +854,10 @@ function parseBatch(text, name) {
     calibration: !!obj.calibration,
     feedback: obj.feedback || 'immediate',
     stage: obj.stage || null,
+    // A label-audit batch: every point carries `assigned`, revealed after the
+    // call. Not a calibration batch -- label_rounds.py drops those from the
+    // round, and an audit's rows are the round's whole output.
+    audit: !!obj.audit,
     // Which recipe built the baked evidence. A silently changed recipe is the
     // one way a point-values table can be wrong and look right.
     evidence_version: obj.evidence_version || null,
@@ -883,15 +924,29 @@ async function loadManifest() {
   // "12 for you" rather than "100 points": the number an expert acts on is the
   // number assigned to them, and the manifest carries it per expert so this
   // needs no batch file downloaded.
-  const me = Expert.id();
+  renderBatchSelect();
+}
+
+/** The dropdown's options. A function, not inline in loadManifest, because a
+ *  batch finished in this session must gain its "completed" mark without a
+ *  manifest reload. Keeps whatever is selected. */
+function renderBatchSelect() {
+  const sel = $('batch-select');
+  if (!S.manifest.length) return;
+  const keep = sel.value;
   sel.innerHTML = S.manifest.map(b => {
-    const mine = (b.assigned && b.assigned[me]) || 0;
-    const who = mine ? ' — ' + mine + ' for you'
-              : (b.assigned_to ? ' — ' + b.assigned_to : '');
-    const n = b.n ? ' (' + b.n + ')' : '';
+    const w = batchWho(b);
+    const num = w.mine || b.n || '';
+    const who = w.mine
+      ? ' · ' + num + ' for you' + (w.others ? ' (with ' + w.others + ')' : '')
+      : (num ? ' · ' + num : '') + (w.names ? ' · ' + w.names : '');
+    const kind = channelLabel(b) === 'label audit' ? ' · label audit' : '';
+    const done = batchClosed(b) || (w.mine && batchIsDone(b))
+      ? ' · \u2713 completed' : '';
     return '<option value="' + esc(b.file) + '">' + esc(b.batch_id || b.file)
-         + n + esc(who) + '</option>';
+         + esc(who + kind + done) + '</option>';
   }).join('');
+  if (keep && [...sel.options].some(o => o.value === keep)) sel.value = keep;
 }
 
 async function loadBatchFromUrl(url) {
@@ -924,7 +979,8 @@ function adoptBatch(batch) {
     if (rec && !rec._synced) Outbox.add(rec);
   $('batch-line').innerHTML = esc(batch.batch_id) + ' · '
     + batch.points.length + ' samples'
-    + (batch.channel ? ' · <b>' + esc(batch.channel) + '</b> channel' : '')
+    + (batch.audit || batch.channel === 'audit' ? ' · <b>label audit</b>'
+       : batch.channel ? ' · <b>' + esc(batch.channel) + '</b> channel' : '')
     + (batch.calibration
        ? ' · <b style="color:var(--violet)">calibration'
          + (batch.stage ? ' · ' + esc(batch.stage) : '') + '</b>' : '');
@@ -969,9 +1025,15 @@ function batchOpeningNote(batch) {
     bits.push('<b>Teaching set.</b> You are told the agreed answer after every '
       + 'interpretation, so the legend is learned here rather than argued about later. '
       + 'Do the qualification set afterwards.');
+  else if (batch.audit)
+    bits.push('<b>Label audit.</b> Every sample already has a label on file. '
+      + 'It stays hidden until you save your own call; then it is shown, and if '
+      + 'the two differ you say why, or revise. Your first call is kept as the '
+      + 'blind reading either way.');
   if (batch.instructions) bits.push(esc(batch.instructions));
   if (!bits.length) return null;
-  return { title: batch.calibration ? 'Calibration' : 'About this batch',
+  return { title: batch.calibration ? 'Calibration'
+             : batch.audit ? 'Label audit' : 'About this batch',
            body: '<div class="sub left">' + bits.map(b => '<p style="margin-top:8px">'
              + b + '</p>').join('') + '</div>' };
 }
@@ -1413,6 +1475,9 @@ function saveCurrent(advance) {
     app_version: APP_VERSION,
     _synced: false
   };
+  // Only on an audit batch, so every other batch's rows are byte-for-byte what
+  // they were (and the sync guard can tell an audit row by its keys).
+  if (S.batch.audit) Object.assign(rec, auditFields(p, rec, S.labels[p.id]));
   S.labels[p.id] = rec;
   // The outbox write is the durability guarantee and stays synchronous. The
   // full-batch LS.save is not: it is a JSON.stringify of every label in the
@@ -1430,6 +1495,9 @@ function saveCurrent(advance) {
   queueSync();
   toastSaved(rec);
   perfMark('saveAck', Date.now() - t0);
+  // An audit call that matches nothing on file stays put until it has a reason
+  // or a revision: the reveal is on this point, and moving on hides it.
+  if (auditOwesReason(p, rec)) { renderAudit(p); return; }
   if (advance !== false) next();
 }
 
@@ -1694,6 +1762,7 @@ function calibrationRevealed() {
 // (a labeller's report, 2026-09-25). A called point now shows its own; an
 // uncalled one shows the call just made, which is what arrives after Enter.
 function renderCalibration(p) {
+  if (S.batch && S.batch.audit) { renderAudit(p); return; }
   const el = $('cal-feedback');
   const rec = p && S.labels[p.id];
   const f = rec && p.reference && calibrationRevealed()
@@ -1747,6 +1816,110 @@ function calibrationReview() {
     + '</div><div class="go-row"><button class="go secondary" data-act="calcsv">'
     + 'Download as CSV</button><button class="go" data-act="close">Close</button></div>';
 }
+
+// ── label audit ─────────────────────────────────────────────────────────────
+// An audit batch re-reads points that already have a label on file. The label
+// is shown only after this reader has saved a call of their own, and that first
+// call is stamped `blind_transition` and never changes: it is the unanchored
+// measurement, and the reason the reveal waits. Everything after the reveal --
+// a revised call, a reason -- is the verification, recorded beside it.
+const AUDIT_CANNOT = 'cannot interpret';
+const AUDIT_REASONS = [
+  { key: 'assigned_wrong', label: 'The label on file is wrong' },
+  { key: 'definition_changed',
+    label: 'It fits the old definitions, not the current cribsheet' },
+  { key: 'ambiguous', label: 'Genuinely ambiguous' }
+];
+
+/** A call as the audit compares it: an uninterpretable save is a call too. */
+function auditCall(rec) { return rec.transition || AUDIT_CANNOT; }
+
+/** The audit columns for a save, given this reader's previous revision.
+ *
+ *  `blind_transition` is the first call and is carried forward from `prev`
+ *  forever. `mismatch_reason` is '' on a match, `revised` when the reader moved
+ *  to a label on file after seeing it, and otherwise the reason they chose --
+ *  kept only while the call it explains stands. */
+function auditFields(p, rec, prev) {
+  const assigned = p.assigned || [];
+  const blind = (prev && prev.blind_transition) || auditCall(rec);
+  const final = auditCall(rec);
+  let reason = '';
+  if (assigned.includes(final)) reason = final !== blind ? 'revised' : '';
+  else if (prev && auditCall(prev) === final
+           && AUDIT_REASONS.some(r => r.key === prev.mismatch_reason))
+    reason = prev.mismatch_reason;
+  return { assigned: assigned.join('|'), blind_transition: blind,
+           mismatch_reason: reason };
+}
+
+/** The call matches nothing on file and no reason has been given. */
+function auditOwesReason(p, rec) {
+  return !!(S.batch && S.batch.audit && rec && p.assigned
+    && !p.assigned.includes(auditCall(rec)) && !rec.mismatch_reason);
+}
+
+function setAuditReason(key) {
+  const p = S.points[S.i];
+  const prev = p && S.labels[p.id];
+  if (!prev || !S.batch.audit) return;
+  // A NEW object: the outbox takes identity as the revision (see sendGroup), so
+  // mutating `prev` would let an in-flight acknowledgement swallow this change.
+  const rec = Object.assign({}, prev, { mismatch_reason: key,
+    labelled_at: new Date().toISOString(), _synced: false });
+  S.labels[p.id] = rec;
+  Outbox.add(rec);
+  markLabelsDirty();
+  patchStrip(S.i);
+  updateProgress();          // a reason is what turns the batch complete
+  queueSync();
+  next();
+}
+
+function renderAudit(p) {
+  const el = $('cal-feedback');
+  const rec = p && S.labels[p.id];
+  if (!rec || !p.assigned) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const final = auditCall(rec);
+  const blind = rec.blind_transition || final;
+  const hit = p.assigned.includes(final);
+  let html = (p.assigned.length > 1 ? 'Two readings on file: ' : 'On file: ')
+    + p.assigned.map(a => '<b>' + esc(a) + '</b>').join(' and ') + '.';
+  if (p.assigned_note)
+    html += ' <span class="audit-note">' + esc(p.assigned_note) + '</span>';
+  html += '<br>Your blind call: <b>' + esc(blind) + '</b>'
+    + (blind !== final ? ', revised to <b>' + esc(final) + '</b>' : '') + '.';
+  if (!hit)
+    html += '<div class="audit-reasons">Why do they differ? '
+      + AUDIT_REASONS.map(r => '<button type="button" class="audit-reason'
+        + (rec.mismatch_reason === r.key ? ' on' : '') + '" data-reason="'
+        + r.key + '">' + esc(r.label) + '</button>').join('')
+      + '<div class="audit-hint">Or change your call above and save again — '
+      + 'your blind call is kept.</div></div>';
+  el.style.display = '';
+  el.className = hit ? 'hit' : 'miss';
+  el.innerHTML = html;
+  el.querySelectorAll('button.audit-reason').forEach(b => {
+    b.onclick = () => setAuditReason(b.dataset.reason);
+  });
+}
+
+/** An audit row: every audit save has a non-empty `blind_transition`. By value,
+ *  not by key -- a row restored from a current sheet carries every column,
+ *  this one empty, and must not be held as an audit row. */
+function isAuditGroup(group) {
+  return group.rows.some(r => !!r.blind_transition);
+}
+
+/** The deployed script stores the audit columns. A copy of Code.gs from before
+ *  them accepts the POST, acknowledges every row and drops the three columns --
+ *  the blind call among them -- without a word, so the rows wait here instead. */
+function sheetTakesAudit() {
+  return Array.isArray(SYNC.cols) && SYNC.cols.includes('blind_transition');
+}
+const AUDIT_STALE = 'The Sheet script predates the label audit: audit rows are '
+  + 'held on this computer, not lost. Paste the current Code.gs into the '
+  + "Sheet's Apps Script, deploy, and reload.";
 
 const CAL_COLS = ['point_id', 'lon', 'lat', 'agree', 'you_said', 'reference',
   'confidence', 'notes', 'link'];
@@ -2300,8 +2473,31 @@ function updateProgress() {
   $('progress-wrap').setAttribute('aria-valuenow', Math.round(pct));
   $('progress-wrap').setAttribute('aria-valuetext',
     done + ' of ' + total + ' assigned samples completed');
-  $('pill-progress').textContent = done + ' / ' + total;
-  $('pill-progress').title = total === S.points.length
+  // "Complete" means every sample assigned to you is called AND, on an audit
+  // batch, none still owes the reason a mismatch asks for: that point is saved
+  // but not finished, and a green badge over it would say otherwise.
+  const owing = S.batch && S.batch.audit
+    ? S.points.filter(p => auditOwesReason(p, S.labels[p.id])).length : 0;
+  const closed = batchClosed(currentEntry());
+  const complete = closed || (total > 0 && done >= total && !owing);
+  const pill = $('pill-progress');
+  pill.textContent = closed ? '\u2713 Batch completed'
+    : complete ? '\u2713 Batch complete \u00B7 ' + done + ' / ' + total
+    : done + ' / ' + total + (owing ? ' \u00B7 ' + owing + ' need a reason' : '');
+  pill.classList.toggle('ok', complete);
+  pill.classList.toggle('warn', !complete && owing > 0);
+  // Re-rendered when this batch's state flips AND when the batch changes: the
+  // one just left now reads from localStorage and must keep its mark.
+  const stamp = (S.batch && S.batch.batch_id) + ':' + complete;
+  S.batchComplete = complete;
+  if (stamp !== S.batchCompleteStamp) { S.batchCompleteStamp = stamp; renderBatchSelect(); }
+  $('pill-progress').title = closed
+    ? 'This batch is closed: its labelling round is finished for everyone.'
+    : complete
+    ? 'Every sample assigned to you in this batch is labelled.'
+    : owing ? owing + ' audit sample' + (owing === 1 ? '' : 's')
+      + ' differ from the label on file and still need a reason.'
+    : total === S.points.length
     ? 'This batch has no reader assignments, so all ' + total + ' samples are yours.'
     : 'Your progress in this batch. Its ' + S.points.length
       + ' samples are divided between the assigned ecologists.';
@@ -2873,6 +3069,7 @@ function useMapSource(which) {
 }
 
 function initLayerControls() {
+  initLegendBox();
   // Built from EOX_YEARS rather than written out in the markup, so the year list
   // has one definition and the <select> cannot offer a year `BASES` has no
   // source for. The endpoints the campaign is about are marked, because nine
@@ -3931,7 +4128,8 @@ const SYNC = {
   state: 'connecting',    // one of the above
   detail: '',             // last error, shown on click
   collabError: '',        // why "who holds what" is unavailable, if it is
-  reachable: null         // null = not asked yet, true/false = answered
+  reachable: null,        // null = not asked yet, true/false = answered
+  cols: null              // the script's COLS, from ping; null = not asked yet
 };
 
 let syncTimer = null;
@@ -3990,6 +4188,8 @@ async function syncPing() {
   try {
     const body = await sheetGet({ action: 'ping' });
     SYNC.reachable = !!(body && body.ok);
+    // An older script does not report its columns, which is itself the answer.
+    SYNC.cols = body && Array.isArray(body.cols) ? body.cols : [];
     if (!SYNC.reachable) {
       syncState('rejected', body && body.error ? String(body.error) : 'not ok');
       return false;
@@ -4083,16 +4283,21 @@ async function syncNow() {
   if (S.syncing) return;
   const groups = Outbox.groups();
   if (!groups.length) { syncState('accepted'); return; }
+  // Re-asked on every sync while audit rows are held, not only before the first
+  // ping: a Code.gs redeployed mid-session must release them on Retry, without
+  // a reload. Costs one GET per sync, and only while the script is stale.
+  if (groups.some(isAuditGroup) && !sheetTakesAudit()) await syncPing();
 
   S.syncing = true;
   syncState('sending');
   const before = Outbox.size();      // to tell progress from a stuck queue
-  let failed = false, refused = null;
+  let failed = false, refused = null, held = false;
   try {
     // Sequential, not Promise.all: the Apps Script takes a script lock per
     // write, so parallel POSTs queue on the server anyway and only make the
     // failure modes harder to read.
     for (const group of groups) {
+      if (isAuditGroup(group) && !sheetTakesAudit()) { held = true; continue; }
       try { await sendGroup(group); }
       catch (err) {
         failed = true;
@@ -4105,6 +4310,7 @@ async function syncNow() {
     S.syncing = false;
   }
 
+  if (held && !failed && !refused) { syncState('rejected', AUDIT_STALE); return; }
   if (refused) {
     // The sheet answered and said no. Retrying on a timer will not fix a bad
     // token or an undeployed script, so say what it said and stop.
@@ -4352,7 +4558,8 @@ const EXPORT_COLS = ['campaign', 'batch_id', 'point_id', 'lon', 'lat',
   'class_2018', 'class_2024', 'transition', 'is_change', 'flags', 'confidence',
   'change_year', 'notes', 'calibration', 'reference', 'channel', 'rank', 'score',
   'expert_id', 'labeller', 'labelled_at', 'seconds_on_point',
-  'uninterpretable_reason', 'imagery_a', 'imagery_b', 'app_version'];
+  'uninterpretable_reason', 'imagery_a', 'imagery_b', 'app_version',
+  'assigned', 'blind_transition', 'mismatch_reason'];
 
 function toCSV(records, cols) {
   cols = cols || EXPORT_COLS;
@@ -5466,13 +5673,19 @@ function eeShowLayer(point) {
 
 /** Provenance and legend for the active layer. Nothing goes on screen without
  *  its end year: a 2021 dataset asked a 2024 question answers 2021. */
+/** The × hides the box for the current layer only; the layer stays on, and
+ *  choosing another layer shows its legend again. */
+var legendDismissedFor = null;
 function renderEELegend() {
-  const el = $('ee-legend');
-  if (!el) return;
+  const el = $('ee-legend'), box = $('ee-legend-box');
+  if (!el || !box) return;
   const spec = EE_LAYERS[eeActive.key];
-  if (!spec) { el.innerHTML = ''; el.style.display = 'none'; return; }
-  el.style.display = '';
-  el.innerHTML = '<div class="ee-prov"><b>' + esc(spec.label) + '</b><br>'
+  if (!spec) { el.innerHTML = ''; box.style.display = 'none';
+    legendDismissedFor = null; return; }
+  legendDismissedFor = legendDismissedFor === eeActive.key ? legendDismissedFor : null;
+  $('ee-legend-title').textContent = spec.label;
+  box.style.display = legendDismissedFor ? 'none' : '';
+  el.innerHTML = '<div class="ee-prov">'
     + 'ends <b>' + spec.end + '</b> · ' + esc(spec.res) + ' · '
     + esc(spec.cover) + '</div>'
     + spec.legend()
@@ -5481,6 +5694,27 @@ function renderEELegend() {
          + 'window. Absence here is not evidence of stability after '
          + spec.end + '.</div>'
        : '');
+  syncLegendBox();
+}
+
+/** Bottom-align the legend box with the controls stack, which is top-anchored
+ *  and changes height when its cards open or collapse. */
+function syncLegendBox() {
+  const box = $('ee-legend-box'), ctrl = $('ctrl-right'), m = $('map');
+  if (!box || !ctrl || !m) return;
+  const gap = Math.max(m.getBoundingClientRect().bottom
+    - ctrl.getBoundingClientRect().bottom, 8);
+  box.style.bottom = gap + 'px';
+}
+function initLegendBox() {
+  const close = $('ee-legend-close');
+  if (close) close.addEventListener('click', () => {
+    legendDismissedFor = eeActive.key;
+    $('ee-legend-box').style.display = 'none';
+  });
+  const ctrl = $('ctrl-right');
+  if (ctrl && window.ResizeObserver) new ResizeObserver(syncLegendBox).observe(ctrl);
+  window.addEventListener('resize', syncLegendBox);
 }
 
 function eeLayerNote(html) {
@@ -8651,20 +8885,48 @@ function pickEntryBatch() {
     return (a[id] || 0) > 0 || (b.assigned_to && String(b.assigned_to) === id);
   });
   const unfinished = mine.find(b => !batchLooksDone(b));
-  return unfinished || mine[0] || null;
+  return unfinished || mine.find(b => !batchClosed(b)) || mine[0] || null;
+}
+
+/** A batch the campaign has closed (`completed: true` in the manifest). The
+ *  same for every reader in every browser: round one is finished whether or
+ *  not this browser ever held its labels, and nobody is routed back into it. */
+function batchClosed(entry) { return !!(entry && entry.completed); }
+
+/** The manifest entry for the batch on screen, if it came from the manifest. */
+function currentEntry() {
+  return S.batch && S.manifest.find(b => b.batch_id === S.batch.batch_id) || null;
 }
 
 /** Cheap local read of whether this expert has finished a manifest entry:
  *  the labels for it are in this browser under their namespace. */
 function batchLooksDone(entry) {
+  if (batchClosed(entry)) return true;
   try {
     const raw = localStorage.getItem(
       'recover-labels:' + CFG.campaign + ':' + Expert.id() + ':' + entry.batch_id);
     if (!raw) return false;
-    const n = Object.keys(JSON.parse(raw)).length;
+    const recs = Object.values(JSON.parse(raw));
     const want = (entry.assigned && entry.assigned[Expert.id()]) || entry.n || 0;
-    return want > 0 && n >= want;
+    return want > 0 && recs.length >= want && !recs.some(auditRecOwes);
   } catch (e) { return false; }
+}
+
+/** Done, for the batch on screen from memory (localStorage lags a save by an
+ *  idle tick) and for any other from this browser's copy. */
+function batchIsDone(entry) {
+  if (batchClosed(entry)) return true;
+  if (S.batch && entry.batch_id === S.batch.batch_id) return !!S.batchComplete;
+  return batchLooksDone(entry);
+}
+
+/** A stored audit row whose call matches nothing on file and has no reason.
+ *  Read off the row alone (`assigned` is stamped on every audit save), so it
+ *  works for a batch that is not open. */
+function auditRecOwes(rec) {
+  if (!rec || !rec.assigned || !rec.blind_transition) return false;
+  return !String(rec.assigned).split('|').includes(auditCall(rec))
+    && !rec.mismatch_reason;
 }
 
 /** The picker, when there is nothing obvious to resume. Assignments first,
@@ -8673,15 +8935,19 @@ function batchLooksDone(entry) {
 function showBatchPicker(reason) {
   const id = Expert.id();
   const row = b => {
-    const n = (b.assigned && b.assigned[id]) || 0;
-    const mine = n > 0 || (b.assigned_to && String(b.assigned_to) === id);
+    const w = batchWho(b);
+    const mine = w.mine > 0 || (b.assigned_to && String(b.assigned_to) === id);
+    const kind = channelLabel(b);
     return '<button class="pick' + (mine ? '' : ' dim')
       + '" data-act="batch" data-arg="' + esc(b.file) + '">'
       + '<b>' + esc(b.batch_id || b.file) + '</b>'
-      + (b.n ? ' · ' + b.n + ' samples' : '')
-      + (b.channel ? ' · ' + esc(b.channel) : '')
-      + (mine ? ' · <span style="color:var(--accent)">' + n + ' assigned to you</span>'
-              : ' · not assigned to you')
+      + (batchClosed(b) || (w.mine && batchIsDone(b))
+         ? ' <span class="badge-done">\u2713 completed</span>' : '')
+      + ((w.mine || b.n) ? ' · ' + (w.mine || b.n) + ' samples' : '')
+      + (kind ? ' · ' + esc(kind) : '')
+      + (mine ? ' · <span style="color:var(--accent)">for you'
+                + (w.others ? ' (with ' + esc(w.others) + ')' : '') + '</span>'
+              : (w.names ? ' · for ' + esc(w.names) : ''))
       + '</button>';
   };
   const sorted = S.manifest.slice().sort((a, b) => {

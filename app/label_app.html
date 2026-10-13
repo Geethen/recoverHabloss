@@ -113,6 +113,15 @@
 
 <div id="layout">
   <div id="map">
+    <!-- The layer legend: its own floating box, left of the controls stack and
+         bottom-aligned to it (js: syncLegendBox). Not inside #ctrl-right, which
+         scrolls and collapses. -->
+    <aside id="ee-legend-box" style="display:none" aria-label="Layer legend">
+      <div class="lg-head"><span id="ee-legend-title">Legend</span>
+        <button type="button" id="ee-legend-close" aria-label="Hide legend"
+                title="Hide this legend (the layer stays on)">×</button></div>
+      <div id="ee-legend"></div>
+    </aside>
     <div id="ctrl-right">
       <div class="controls-head">
         <span class="title">Map controls</span>
@@ -259,7 +268,6 @@
               <input type="range" id="ee-opacity" min="0" max="100" value="70"
                      aria-labelledby="ee-op-lab" style="flex:1">
             </div>
-            <div id="ee-legend" style="display:none"></div>
             <div id="ee-layer-note" style="display:none"></div>
           </div>
           <div class="note" id="ee-note">Optional reference layers. You can
