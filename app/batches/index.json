@@ -40,7 +40,8 @@
     "e1": 75,
     "e2": 75
    },
-   "assigned_to": "e1, e2"
+   "assigned_to": "e1, e2",
+   "completed": true
   },
   {
    "batch_id": "rar001",
@@ -53,6 +54,82 @@
    "assigned": {
     "e1": 75,
     "e2": 75
+   },
+   "assigned_to": "e1, e2",
+   "completed": true
+  },
+  {
+   "batch_id": "aud_sup001",
+   "file": "aud_sup001.json",
+   "n": 100,
+   "channel": "audit",
+   "calibration": false,
+   "stage": "audit",
+   "audit": true,
+   "created": "2026-10-13T11:19:21+00:00",
+   "assigned": {
+    "e3": 100,
+    "e4": 100
+   },
+   "assigned_to": "e3, e4"
+  },
+  {
+   "batch_id": "aud_sup002",
+   "file": "aud_sup002.json",
+   "n": 100,
+   "channel": "audit",
+   "calibration": false,
+   "stage": "audit",
+   "audit": true,
+   "created": "2026-10-13T11:19:21+00:00",
+   "assigned": {
+    "e3": 100,
+    "e4": 100
+   },
+   "assigned_to": "e3, e4"
+  },
+  {
+   "batch_id": "aud_sup003",
+   "file": "aud_sup003.json",
+   "n": 100,
+   "channel": "audit",
+   "calibration": false,
+   "stage": "audit",
+   "audit": true,
+   "created": "2026-10-13T11:19:21+00:00",
+   "assigned": {
+    "e3": 100,
+    "e4": 100
+   },
+   "assigned_to": "e3, e4"
+  },
+  {
+   "batch_id": "aud_reg001",
+   "file": "aud_reg001.json",
+   "n": 100,
+   "channel": "audit",
+   "calibration": false,
+   "stage": "audit",
+   "audit": true,
+   "created": "2026-10-13T11:19:21+00:00",
+   "assigned": {
+    "e1": 100,
+    "e2": 100
+   },
+   "assigned_to": "e1, e2"
+  },
+  {
+   "batch_id": "aud_reg002",
+   "file": "aud_reg002.json",
+   "n": 100,
+   "channel": "audit",
+   "calibration": false,
+   "stage": "audit",
+   "audit": true,
+   "created": "2026-10-13T11:19:21+00:00",
+   "assigned": {
+    "e1": 100,
+    "e2": 100
    },
    "assigned_to": "e1, e2"
   }
